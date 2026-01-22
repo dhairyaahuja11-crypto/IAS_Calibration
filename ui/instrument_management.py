@@ -1,3 +1,4 @@
+from os import name
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QLineEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -5,12 +6,13 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QMessageBox
+#from database.database1 import fetch_instruments
+
 
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox,
     QPushButton, QGridLayout, QHBoxLayout, QVBoxLayout, QCheckBox
 )
-
 
 class AddInstrumentDialog(QDialog):
     """
@@ -119,37 +121,7 @@ class AddInstrumentDialog(QDialog):
         btn_layout.addWidget(cancel_btn)
 
         layout.addLayout(btn_layout, row + 1, 0, 1, 4)
-    '''
-    def _build_ui(self):
-        layout = QGridLayout(self)
-
-        layout.addWidget(QLabel("Instrument Name:"), 0, 0)
-        self.name_edit = QLineEdit()
-        layout.addWidget(self.name_edit, 0, 1)
-
-        layout.addWidget(QLabel("Instrument ID:"), 1, 0)
-        self.id_edit = QLineEdit()
-        layout.addWidget(self.id_edit, 1, 1)
-
-        layout.addWidget(QLabel("Instrument Type:"), 2, 0)
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(["DLP", "Hand-held"])
-        layout.addWidget(self.type_combo, 2, 1)
-
-        layout.addWidget(QLabel(f"Creation Date: {self.creation_date}"), 3, 0, 1, 2)
-
-        btn_layout = QHBoxLayout()
-        ok_btn = QPushButton("OK")
-        cancel_btn = QPushButton("Cancel")
-
-        ok_btn.clicked.connect(self.accept)
-        cancel_btn.clicked.connect(self.reject)
-
-        btn_layout.addWidget(ok_btn)
-        btn_layout.addWidget(cancel_btn)
-
-        layout.addLayout(btn_layout, 4, 0, 1, 2)
-        '''
+    
 
     def get_data(self):
         return {
@@ -206,6 +178,9 @@ class InstrumentManagementUI(QWidget):
         btn_layout = QHBoxLayout()
 
         self.inquiry_btn = QPushButton("Inquiry")
+        #-------------------------------------
+        self.inquiry_btn.clicked.connect(self.on_inquiry_clicked)
+
         self.add_btn = QPushButton("Add")
         self.modify_btn = QPushButton("Modify")
         self.delete_btn = QPushButton("Delete")
@@ -213,6 +188,7 @@ class InstrumentManagementUI(QWidget):
         self.add_btn.clicked.connect(self.on_add_clicked)
 
         btn_layout.addWidget(self.inquiry_btn)
+
         btn_layout.addWidget(self.add_btn)
         btn_layout.addWidget(self.modify_btn)
         btn_layout.addWidget(self.delete_btn)
@@ -232,6 +208,28 @@ class InstrumentManagementUI(QWidget):
         main_layout.addWidget(self.table)
     def _connect_signals(self):
         self.btn_delete.clicked.connect(self.open_delete_dialog)
+
+    def on_inquiry_clicked(self):
+    # 1️⃣ Collect filter values from UI
+        name = self.instrument_name_edit.text()
+        instrument_id = self.instrument_id_edit.text()
+        instrument_type = self.instrument_type_combo.currentText()
+    
+        date_from = self.date_from.date().toString("yyyy-MM-dd")
+        date_to = self.date_to.date().toString("yyyy-MM-dd")
+    '''
+    # 2️⃣ Query database
+        rows = fetch_instruments(
+        name=name,
+        instrument_id=instrument_id,
+        instrument_type=instrument_type,
+        date_from=date_from,
+        date_to=date_to
+    )
+
+    # 3️⃣ Display results in table
+        self.populate_table(rows)'''
+
 
     def open_delete_dialog(self):
     # 🔴 TODO: replace with real selection check
@@ -259,6 +257,25 @@ class InstrumentManagementUI(QWidget):
         else:
             print("Delete cancelled")
 
+    def populate_table(self, rows):
+        self.table.setRowCount(0)
+
+    '''for row_index, row in enumerate(self,rows):
+        self.table.insertRow(row_index)
+
+        # checkbox column (empty for now)
+        self.table.setItem(row_index, 0, QTableWidgetItem(""))
+
+        self.table.setItem(row_index, 1, QTableWidgetItem(str(row["instrument_id"])))
+        self.table.setItem(row_index, 2, QTableWidgetItem(row["instrument_name"]))
+        self.table.setItem(row_index, 3, QTableWidgetItem(row["instrument_type"]))
+        self.table.setItem(row_index, 4, QTableWidgetItem(row["model"]))
+        self.table.setItem(row_index, 5, QTableWidgetItem(row["serial_number"]))
+        self.table.setItem(row_index, 6, QTableWidgetItem(str(row["user_id"])))
+        self.table.setItem(row_index, 7, QTableWidgetItem(row["creation_time"]))
+        self.table.setItem(row_index, 8, QTableWidgetItem(row["status"]))
+        self.table.setItem(row_index, 9, QTableWidgetItem(row["remark"]))
+        '''
 
     # ---------------- ADD BUTTON LOGIC ----------------
     def on_add_clicked(self):

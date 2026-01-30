@@ -1,0 +1,21 @@
+# Spectral Analysis System - Requirements
+# Python 3.8+
+
+# GUI Framework
+PyQt6>=6.4.0
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.23.0
+openpyxl>=3.0.0
+
+# Plotting and Visualization
+matplotlib>=3.6.0
+pyqtgraph>=0.13.0
+
+# Database
+PyMySQL>=1.0.0
+
+# Scientific Computing (for calibration module if needed)
+scikit-learn>=1.2.0
+scipy>=1.10.0

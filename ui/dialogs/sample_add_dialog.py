@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QTextEdit,
     QSpinBox, QCheckBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout,
-    QGroupBox
+    QGroupBox, QWidget
 )
 
 
@@ -10,11 +10,14 @@ class SampleAddDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Sample Information")
-        self.resize(650, 420)
+        self.resize(750, 420)
+        self.substance_inputs = {}
         self.build_ui()
 
     def build_ui(self):
-        main_layout = QHBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        
+        main_layout = QHBoxLayout()
 
         # ---------- LEFT FORM ----------
         form_layout = QGridLayout()
@@ -34,7 +37,7 @@ class SampleAddDialog(QDialog):
 
         self.initial_wavelength = QSpinBox()
         self.initial_wavelength.setRange(0, 5000)
-        self.initial_wavelength.setValue(906)
+        self.initial_wavelength.setValue(900)
         form_layout.addWidget(QLabel("Initial wavelength:"), row, 0)
         form_layout.addWidget(self.initial_wavelength, row, 1)
         row += 1
@@ -69,17 +72,29 @@ class SampleAddDialog(QDialog):
 
         main_layout.addLayout(left_container, 3)
 
-        # ---------- RIGHT: SUBSTANCE CONTENT ----------
-        substance_group = QGroupBox("Substance content")
+        # ---------- MIDDLE: SUBSTANCE CONTENT CHECKBOXES ----------
+        substance_group = QGroupBox("Substance content:")
         substance_layout = QVBoxLayout(substance_group)
 
         self.substance_checkboxes = {}
         for name in ["Protein", "Oil", "Moisture"]:
             cb = QCheckBox(name)
+            cb.stateChanged.connect(self.on_substance_checkbox_changed)
             substance_layout.addWidget(cb)
             self.substance_checkboxes[name] = cb
+        
+        substance_layout.addStretch()
 
         main_layout.addWidget(substance_group, 2)
+
+        # ---------- RIGHT: SUBSTANCE VALUE INPUTS (Dynamic) ----------
+        self.substance_values_container = QWidget()
+        self.substance_values_layout = QGridLayout(self.substance_values_container)
+        self.substance_values_layout.setContentsMargins(0, 0, 0, 0)
+        
+        main_layout.addWidget(self.substance_values_container, 2)
+        
+        outer_layout.addLayout(main_layout)
 
         # ---------- BOTTOM ----------
         bottom_layout = QHBoxLayout()
@@ -91,17 +106,48 @@ class SampleAddDialog(QDialog):
         self.btn_ok = QPushButton("OK")
         self.btn_cancel = QPushButton("Cancel")
 
-        self.btn_ok.clicked.connect(self.accept)
+        self.btn_ok.clicked.connect(self.validate_and_accept)
         self.btn_cancel.clicked.connect(self.reject)
 
         bottom_layout.addWidget(self.btn_ok)
         bottom_layout.addWidget(self.btn_cancel)
 
-        outer_layout = QVBoxLayout()
-        outer_layout.addLayout(main_layout)
         outer_layout.addLayout(bottom_layout)
+    
+    def on_substance_checkbox_changed(self):
+        """Show/hide input fields based on checked substances"""
+        # Clear existing input fields
+        for i in reversed(range(self.substance_values_layout.count())):
+            widget = self.substance_values_layout.itemAt(i).widget()
+            if widget:
+                widget.setParent(None)
+        
+        self.substance_inputs.clear()
+        
+        # Add input fields for checked substances
+        row = 0
+        for name, checkbox in self.substance_checkboxes.items():
+            if checkbox.isChecked():
+                label = QLabel(f"{name}:")
+                input_field = QLineEdit()
+                input_field.setPlaceholderText(f"Enter {name.lower()} value")
+                
+                self.substance_values_layout.addWidget(label, row, 0)
+                self.substance_values_layout.addWidget(input_field, row, 1)
+                
+                self.substance_inputs[name] = input_field
+                row += 1
 
-        self.setLayout(outer_layout)
+    def validate_and_accept(self):
+        """Validate form before accepting"""
+        from PyQt6.QtWidgets import QMessageBox
+        
+        if not self.sample_name.text().strip():
+            QMessageBox.warning(self, "Validation Error", "Sample name is required!")
+            self.sample_name.setFocus()
+            return
+        
+        self.accept()
 
     # ---------- DATA ACCESS ----------
     def get_data(self):
@@ -113,9 +159,10 @@ class SampleAddDialog(QDialog):
             "wavelength_step": self.wavelength_step.value(),
             "user_id": self.user_id.text(),
             "remark": self.remark.toPlainText(),
-            "substance_content": [
-                name for name, cb in self.substance_checkboxes.items()
-                if cb.isChecked()
-            ],
+            "substance_content": {
+                name: self.substance_inputs[name].text()
+                for name in self.substance_inputs
+                if self.substance_inputs[name].text().strip()
+            },
             "add_in_batches": self.batch_checkbox.isChecked()
         }

@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QLineEdit, QComboBox,
     QPushButton, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QDateEdit, QMessageBox
+    QGridLayout, QDateEdit, QMessageBox, QTableWidget,
+    QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtCore import QDate
 
@@ -10,6 +11,9 @@ from ui.dialogs.project_add_dialog import ProjectAddDialog
 
 # Modify dialog
 from ui.dialogs.modify_project_management import ModifyProjectDialog
+
+# Service
+from services.project_service import ProjectService
 
 
 class ProjectManagementUI(QWidget):
@@ -83,37 +87,216 @@ class ProjectManagementUI(QWidget):
         btn_layout.addStretch()
 
         main_layout.addLayout(btn_layout)
-        main_layout.addStretch()
+
+        # ---------- PROJECT TABLE ----------
+        self.project_table = QTableWidget(0, 11)
+        self.project_table.setHorizontalHeaderLabels([
+            "ID", "project name", "sample type", "measurement type",
+            "measurement index", "status", "User ID", "remark",
+            "creation time", "modification time", "State"
+        ])
+        
+        # Set column widths
+        header = self.project_table.horizontalHeader()
+        self.project_table.setColumnWidth(0, 60)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+        
+        # Enable sorting
+        self.project_table.setSortingEnabled(True)
+        
+        # Enable row selection
+        self.project_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        
+        main_layout.addWidget(self.project_table)
+        
+        # Load initial data
+        self.load_projects()
 
     # ---------------- SIGNALS ----------------
     def _connect_signals(self):
+        self.btn_inquiry.clicked.connect(self.load_projects)
         self.btn_add.clicked.connect(self.open_add_dialog)
         self.btn_modify.clicked.connect(self.open_modify_dialog)
         self.btn_delete.clicked.connect(self.open_delete_dialog)
+
+    # ---------------- DATA LOADING ----------------
+    def load_projects(self):
+        """Load projects based on filter criteria"""
+        try:
+            # Get filter values
+            date_from = self.date_from.date().toString("yyyy-MM-dd")
+            date_to = self.date_to.date().toString("yyyy-MM-dd")
+            project_name = self.project_name.text().strip()
+            sample_type = self.sample_combo.currentText()
+            measurement_type = self.type_combo.currentText()
+            status = self.status_combo.currentText()
+            user_id = self.user_id.text().strip()
+            
+            print(f"Loading projects from {date_from} to {date_to}")
+            print(f"Filters - Name: {project_name}, Sample: {sample_type}, Type: {measurement_type}, Status: {status}, User: {user_id}")
+            
+            # Fetch projects from database
+            projects = ProjectService.get_projects_by_filters(
+                date_from=date_from,
+                date_to=date_to,
+                status=status if status.lower() != 'all' else None,
+                measurement_type=measurement_type if measurement_type.lower() != 'all' else None,
+                project_name=project_name if project_name else None,
+                sample_type=sample_type if sample_type.lower() != 'all' else None
+            )
+            
+            print(f"Found {len(projects)} projects")
+            
+            # Populate table
+            self.populate_table(projects)
+            
+        except Exception as e:
+            print(f"Error loading projects: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to load projects: {str(e)}")
+    
+    def populate_table(self, projects):
+        """Populate the project table with data"""
+        self.project_table.setRowCount(0)
+        self.project_table.setSortingEnabled(False)
+        
+        for project in projects:
+            row = self.project_table.rowCount()
+            self.project_table.insertRow(row)
+            
+            # Handle bytes decoding
+            def decode_if_bytes(value):
+                if isinstance(value, bytes):
+                    return value.decode('utf-8')
+                return str(value) if value is not None else ''
+            
+            columns = [
+                decode_if_bytes(project.get('project_id', '')),
+                decode_if_bytes(project.get('project_name', '')),
+                decode_if_bytes(project.get('sample_type', '')),
+                decode_if_bytes(project.get('measurement_type', '')),
+                decode_if_bytes(project.get('measurement_index', '')),
+                decode_if_bytes(project.get('status', '')),
+                decode_if_bytes(project.get('user_id', '')),
+                decode_if_bytes(project.get('remark', '')),
+                decode_if_bytes(project.get('creation_time', '')),
+                decode_if_bytes(project.get('modification_time', '')),
+                decode_if_bytes(project.get('project_state', ''))
+            ]
+            
+            for col, value in enumerate(columns):
+                item = QTableWidgetItem(value)
+                self.project_table.setItem(row, col, item)
+        
+        self.project_table.setSortingEnabled(True)
+        print(f"Table populated with {self.project_table.rowCount()} projects")
 
     # ---------------- ACTIONS ----------------
     def open_add_dialog(self):
         dialog = ProjectAddDialog(self)
         if dialog.exec():
             print("Project added")
+            # Reload projects after adding
+            self.load_projects()
 
     def open_modify_dialog(self):
-        # IMPORTANT: keep reference + use exec()
-        self.modify_dialog = ModifyProjectDialog(self)
-        self.modify_dialog.setWindowTitle("Modify Project")
+        """Open modify dialog with selected project data"""
+        # Get selected row
+        selected_rows = self.project_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            QMessageBox.warning(self, "Warning", "Please select a project to modify.")
+            return
+        
+        # Get project ID from the first selected row
+        row = selected_rows[0].row()
+        project_id = self.project_table.item(row, 0).text()
+        
+        # Fetch full project details from database
+        project_data = ProjectService.get_project_by_id(project_id)
+        
+        if not project_data:
+            QMessageBox.critical(self, "Error", f"Could not load project data for ID: {project_id}")
+            return
+        
+        # Fetch associated samples
+        project_samples = ProjectService.get_project_samples(project_id)
+        
+        # Open dialog with data
+        self.modify_dialog = ModifyProjectDialog(self, project_data, project_samples)
+        self.modify_dialog.setWindowTitle(f"Modify Project - {project_data.get('project_name', '')}")
         self.modify_dialog.resize(1200, 700)
-        self.modify_dialog.exec()
+        if self.modify_dialog.exec():
+            # Reload projects after modification
+            self.load_projects()
 
     def open_delete_dialog(self):
+        """Delete selected project(s)"""
+        # Get all selected rows
+        selected_rows = self.project_table.selectionModel().selectedRows()
+        
+        if not selected_rows:
+            QMessageBox.warning(self, "Warning", "Please select at least one project to delete.")
+            return
+        
+        # Collect all selected projects
+        projects_to_delete = []
+        for selected_row in selected_rows:
+            row = selected_row.row()
+            project_id = self.project_table.item(row, 0).text()
+            project_name = self.project_table.item(row, 1).text()
+            projects_to_delete.append((project_id, project_name))
+        
+        # Build confirmation message
+        count = len(projects_to_delete)
+        if count == 1:
+            message = f"Delete project '{projects_to_delete[0][1]}' (ID: {projects_to_delete[0][0]})?\n\nThis will also delete all associated sample links."
+        else:
+            project_list = "\n".join([f"- {name} (ID: {pid})" for pid, name in projects_to_delete[:5]])
+            if count > 5:
+                project_list += f"\n... and {count - 5} more"
+            message = f"Delete {count} projects?\n\n{project_list}\n\nThis will also delete all associated sample links."
+        
+        # Show confirmation dialog
         reply = QMessageBox.question(
             self,
             "Warning",
-            "Delete OK?",
+            message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            print("Project deleted")
+            # Delete all selected projects
+            success_count = 0
+            failed_count = 0
+            error_messages = []
+            
+            for project_id, project_name in projects_to_delete:
+                success, message = ProjectService.delete_project(project_id)
+                if success:
+                    success_count += 1
+                    print(f"✓ Deleted: {project_name}")
+                else:
+                    failed_count += 1
+                    error_messages.append(f"{project_name}: {message}")
+                    print(f"✗ Failed: {project_name} - {message}")
+            
+            # Show result
+            if failed_count == 0:
+                QMessageBox.information(self, "Success", f"Successfully deleted {success_count} project(s)!")
+            else:
+                error_text = "\n".join(error_messages)
+                QMessageBox.warning(
+                    self, 
+                    "Partial Success", 
+                    f"Deleted: {success_count}\nFailed: {failed_count}\n\nErrors:\n{error_text}"
+                )
+            
+            # Reload projects after deletion
+            self.load_projects()
         else:
             print("Delete cancelled")

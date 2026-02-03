@@ -107,7 +107,7 @@ class SampleManagementUI(QWidget):
         filter_layout.addWidget(self.sample_status, 0, 3)
 
         filter_layout.addWidget(QLabel("User ID:"), 0, 4)
-        self.user_id = QLineEdit("Agnext")
+        self.user_id = QLineEdit()
         filter_layout.addWidget(self.user_id, 0, 5)
 
         filter_layout.addWidget(QLabel("Creation time:"), 0, 6)

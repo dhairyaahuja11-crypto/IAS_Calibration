@@ -651,6 +651,30 @@ class SampleService:
             cursor.execute("SELECT id, content_name FROM content_dictionary")
             content_dict = {row['content_name'].lower(): row['id'] for row in cursor.fetchall()}
             
+            # Auto-detect new parameters from CSV columns and add to content_dictionary
+            csv_columns = [col for col in df.columns if col not in ['sample id', 'sample name']]
+            new_parameters_added = []
+            
+            for col_name in csv_columns:
+                col_lower = col_name.lower()
+                if col_lower not in content_dict:
+                    # Add new parameter to content_dictionary
+                    try:
+                        cursor.execute(
+                            "INSERT INTO content_dictionary (content_name) VALUES (%s)",
+                            (col_name.title(),)  # Title case: 'ash' -> 'Ash'
+                        )
+                        new_id = cursor.lastrowid
+                        content_dict[col_lower] = new_id
+                        new_parameters_added.append(col_name.title())
+                        print(f"Added new parameter to content_dictionary: {col_name.title()}")
+                    except Exception as e:
+                        print(f"Error adding parameter {col_name}: {e}")
+            
+            if new_parameters_added:
+                conn.commit()
+                print(f"New parameters added: {', '.join(new_parameters_added)}")
+            
             updated_count = 0
             errors = []
             

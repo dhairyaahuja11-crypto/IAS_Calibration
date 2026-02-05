@@ -102,17 +102,18 @@ class SampleService:
                     DATE_FORMAT(s.create_time, '%%Y-%%m-%%d %%H:%%i') as creation_time
                 FROM sample s
                 LEFT JOIN model_data md ON s.sample_id = md.sample_id
-                LEFT JOIN content_dictionary cd1 ON s.property_name1 = cd1.id
-                LEFT JOIN content_dictionary cd2 ON s.property_name2 = cd2.id
-                LEFT JOIN content_dictionary cd3 ON s.property_name3 = cd3.id
-                LEFT JOIN content_dictionary cd4 ON s.property_name4 = cd4.id
-                LEFT JOIN content_dictionary cd5 ON s.property_name5 = cd5.id
-                LEFT JOIN content_dictionary cd6 ON s.property_name6 = cd6.id
-                LEFT JOIN content_dictionary cd7 ON s.property_name7 = cd7.id
-                LEFT JOIN content_dictionary cd8 ON s.property_name8 = cd8.id
-                LEFT JOIN content_dictionary cd9 ON s.property_name9 = cd9.id
-                LEFT JOIN content_dictionary cd10 ON s.property_name10 = cd10.id
+                LEFT JOIN content_dictionary cd1 ON CAST(s.property_name1 AS UNSIGNED) = cd1.id
+                LEFT JOIN content_dictionary cd2 ON CAST(s.property_name2 AS UNSIGNED) = cd2.id
+                LEFT JOIN content_dictionary cd3 ON CAST(s.property_name3 AS UNSIGNED) = cd3.id
+                LEFT JOIN content_dictionary cd4 ON CAST(s.property_name4 AS UNSIGNED) = cd4.id
+                LEFT JOIN content_dictionary cd5 ON CAST(s.property_name5 AS UNSIGNED) = cd5.id
+                LEFT JOIN content_dictionary cd6 ON CAST(s.property_name6 AS UNSIGNED) = cd6.id
+                LEFT JOIN content_dictionary cd7 ON CAST(s.property_name7 AS UNSIGNED) = cd7.id
+                LEFT JOIN content_dictionary cd8 ON CAST(s.property_name8 AS UNSIGNED) = cd8.id
+                LEFT JOIN content_dictionary cd9 ON CAST(s.property_name9 AS UNSIGNED) = cd9.id
+                LEFT JOIN content_dictionary cd10 ON CAST(s.property_name10 AS UNSIGNED) = cd10.id
                 WHERE DATE(s.create_time) BETWEEN %s AND %s
+                AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
                 GROUP BY s.sample_id
                 ORDER BY s.create_time DESC
             """
@@ -681,17 +682,7 @@ class SampleService:
             # Process each row in Excel
             for idx, row in df.iterrows():
                 try:
-                    # Get sample identifier
-                    sample_id = None
-                    if 'sample id' in df.columns and pd.notna(row['sample id']):
-                        value = row['sample id']
-                        if isinstance(value, float):
-                            sample_id = str(int(value))
-                        elif isinstance(value, int):
-                            sample_id = str(value)
-                        else:
-                            sample_id = str(value).strip()
-                    
+                    # Get sample name - this is the primary key for matching
                     sample_name = None
                     if 'sample name' in df.columns and pd.notna(row['sample name']):
                         value = row['sample name']
@@ -700,23 +691,28 @@ class SampleService:
                         else:
                             sample_name = str(value).strip()
                     
-                    if not sample_id and not sample_name:
+                    if not sample_name:
+                        errors.append(f"Row {idx+2}: Missing sample name")
                         continue
                     
-                    # Find sample in database
-                    if sample_id:
-                        cursor.execute("SELECT sample_id FROM sample WHERE sample_id = %s", (sample_id,))
-                    else:
-                        cursor.execute("SELECT sample_id FROM sample WHERE sample_name = %s", (sample_name,))
+                    # Find ALL samples with this sample_name in database 
+                    # (since grouped samples may have multiple replicates with same name)
+                    cursor.execute(
+                        "SELECT sample_id FROM sample WHERE sample_name = %s AND (sample_state IS NULL OR sample_state != 'Deleted')",
+                        (sample_name,)
+                    )
                     
-                    result = cursor.fetchone()
-                    if not result:
-                        errors.append(f"Row {idx+2}: Sample not found")
+                    results = cursor.fetchall()
+                    if not results:
+                        errors.append(f"Row {idx+2}: Sample '{sample_name}' not found")
                         continue
                     
-                    db_sample_id = result['sample_id']
+                    # Get all sample IDs for this sample_name (all replicates)
+                    db_sample_ids = [result['sample_id'] for result in results]
+                    # Get all sample IDs for this sample_name (all replicates)
+                    db_sample_ids = [result['sample_id'] for result in results]
                     
-                    # Extract property values from Excel columns
+                    # Extract property values from CSV columns
                     properties = []
                     for col in df.columns:
                         if col not in ['sample id', 'sample name', 'whether the new']:
@@ -732,7 +728,7 @@ class SampleService:
                                 if property_value and property_value != '0' and property_value.lower() != 'nan':
                                     properties.append((property_id, property_value))
                     
-                    # Update sample with property values (up to 10 properties)
+                    # Update ALL samples with the same sample_name (all replicates)
                     if properties:
                         update_fields = []
                         update_values = []
@@ -748,10 +744,14 @@ class SampleService:
                             update_fields.append(f"property_value{i} = NULL")
                         
                         update_query = f"UPDATE sample SET {', '.join(update_fields)} WHERE sample_id = %s"
-                        update_values.append(db_sample_id)
                         
-                        cursor.execute(update_query, tuple(update_values))
-                        updated_count += 1
+                        # Execute update for EACH sample_id (all replicates get the same properties)
+                        for db_sample_id in db_sample_ids:
+                            update_values_copy = update_values.copy()
+                            update_values_copy.append(db_sample_id)
+                            cursor.execute(update_query, tuple(update_values_copy))
+                        
+                        updated_count += len(db_sample_ids)
                 
                 except Exception as e:
                     errors.append(f"Row {idx+2}: {str(e)}")

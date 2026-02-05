@@ -45,6 +45,7 @@ class ProjectService:
                     project_state
                 FROM project
                 WHERE DATE(create_time) BETWEEN %s AND %s
+                AND (project_state IS NULL OR project_state != 'Deleted')
             """
             
             params = [date_from, date_to]
@@ -104,21 +105,18 @@ class ProjectService:
             conn.begin()
             
             try:
-                # Delete associated samples from project_sample table
-                cursor.execute("SHOW TABLES LIKE 'project_sample'")
-                has_linking_table = cursor.fetchone() is not None
-                
-                if has_linking_table:
-                    cursor.execute("DELETE FROM project_sample WHERE project_id = %s", (project_id,))
-                    deleted_samples = cursor.rowcount
-                    print(f"Deleted {deleted_samples} sample links from project_sample")
-                
-                # Delete the project
-                cursor.execute("DELETE FROM project WHERE project_id = %s", (project_id,))
+                # Soft delete: Mark project as deleted
+                cursor.execute("""
+                    UPDATE project 
+                    SET project_state = 'Deleted'
+                    WHERE project_id = %s
+                """, (project_id,))
                 
                 if cursor.rowcount == 0:
                     conn.rollback()
                     return False, f"Project '{project_id}' not found"
+                
+                print(f"Soft deleted project_id: {project_id} (marked as Deleted)")
                 
                 # Commit transaction
                 conn.commit()
@@ -215,6 +213,7 @@ class ProjectService:
                     FROM sample s
                     INNER JOIN project_sample ps ON s.sample_id = ps.sample_id
                     WHERE ps.project_id = %s
+                    AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
                     ORDER BY s.create_time DESC
                 """
             else:

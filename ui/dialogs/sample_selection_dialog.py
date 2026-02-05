@@ -168,8 +168,45 @@ class SampleSelectionDialog(QDialog):
                 samples = [s for s in samples if user_id.lower() in str(s.get('user_id', '')).lower()]
                 print(f"After user_id filter: {len(samples)} samples")
             
-            # Populate table
-            self.populate_table(samples)
+            # Store original samples for reference
+            self._original_samples = samples
+            
+            # Group samples by sample_name (merge replicates)
+            grouped_samples = {}
+            for sample in samples:
+                sample_name = sample.get('sample_name', '')
+                if sample_name not in grouped_samples:
+                    # First occurrence - use this as representative
+                    grouped_samples[sample_name] = sample.copy()
+                    grouped_samples[sample_name]['sample_ids'] = [sample.get('id', '')]
+                    grouped_samples[sample_name]['replicate_count'] = 1
+                else:
+                    # Additional replicate - update count and IDs
+                    grouped_samples[sample_name]['sample_ids'].append(sample.get('id', ''))
+                    grouped_samples[sample_name]['replicate_count'] += 1
+                    
+                    # Always update substance_content if current sample has it (prefer non-empty)
+                    current_substance = sample.get('substance_content', '').strip()
+                    existing_substance = grouped_samples[sample_name].get('substance_content', '').strip()
+                    
+                    if current_substance and not existing_substance:
+                        # Current has content but existing doesn't - use current
+                        grouped_samples[sample_name]['substance_content'] = current_substance
+                    elif current_substance and existing_substance and len(current_substance) > len(existing_substance):
+                        # Both have content - use the longer/more complete one
+                        grouped_samples[sample_name]['substance_content'] = current_substance
+                    
+                    # Update scanned_number to sum all scans
+                    grouped_samples[sample_name]['scanned_number'] = str(
+                        int(grouped_samples[sample_name].get('scanned_number', 0)) + 
+                        int(sample.get('scanned_number', 0))
+                    )
+            
+            # Convert back to list
+            grouped_list = list(grouped_samples.values())
+            
+            # Populate table with grouped samples
+            self.populate_table(grouped_list)
             
         except Exception as e:
             import traceback
@@ -202,8 +239,10 @@ class SampleSelectionDialog(QDialog):
             checkbox_layout.setContentsMargins(0, 0, 0, 0)
             self.sample_table.setCellWidget(row, 0, checkbox_widget)
             
-            # Store sample ID in checkbox for later retrieval
-            checkbox.setProperty("sample_id", sample.get('id'))
+            # Store ALL sample IDs (for grouped samples) in checkbox for later retrieval
+            sample_ids = sample.get('sample_ids', [sample.get('id')])
+            checkbox.setProperty("sample_id", sample_ids[0])  # Store first ID
+            checkbox.setProperty("sample_ids", sample_ids)  # Store all IDs for grouped samples
             
             # Data columns
             # Fix creation_time if it's bytes
@@ -244,26 +283,33 @@ class SampleSelectionDialog(QDialog):
         print(f"Table population complete. Row count: {self.sample_table.rowCount()}")
 
     def get_selected_samples(self):
-        """Get list of selected sample IDs"""
+        """Get list of selected sample IDs (includes all replicates for grouped samples)"""
         selected = []
         for row in range(self.sample_table.rowCount()):
             checkbox_widget = self.sample_table.cellWidget(row, 0)
             if checkbox_widget:
                 checkbox = checkbox_widget.findChild(QCheckBox)
                 if checkbox and checkbox.isChecked():
-                    sample_id = checkbox.property("sample_id")
-                    sample_data = {
-                        'id': sample_id,
-                        'sample_name': self.sample_table.item(row, 2).text() if self.sample_table.item(row, 2) else '',
-                        'sample_quantity': self.sample_table.item(row, 3).text() if self.sample_table.item(row, 3) else '0',
-                        'scanned_number': self.sample_table.item(row, 4).text() if self.sample_table.item(row, 4) else '0',
-                        'substance_content': self.sample_table.item(row, 5).text() if self.sample_table.item(row, 5) else '',
-                        'scanning_method': self.sample_table.item(row, 6).text() if self.sample_table.item(row, 6) else '',
-                        'sample_status': self.sample_table.item(row, 7).text() if self.sample_table.item(row, 7) else '',
-                        'user_id': self.sample_table.item(row, 8).text() if self.sample_table.item(row, 8) else '',
-                        'creation_time': self.sample_table.item(row, 9).text() if self.sample_table.item(row, 9) else ''
-                    }
-                    selected.append(sample_data)
+                    # Get all sample IDs (for grouped samples, this includes all replicates)
+                    sample_ids = checkbox.property("sample_ids")
+                    if not sample_ids:
+                        # Fallback to single ID if sample_ids not set
+                        sample_ids = [checkbox.property("sample_id")]
+                    
+                    # Return data for each sample ID (all replicates)
+                    for sample_id in sample_ids:
+                        sample_data = {
+                            'id': sample_id,
+                            'sample_name': self.sample_table.item(row, 2).text() if self.sample_table.item(row, 2) else '',
+                            'sample_quantity': self.sample_table.item(row, 3).text() if self.sample_table.item(row, 3) else '0',
+                            'scanned_number': self.sample_table.item(row, 4).text() if self.sample_table.item(row, 4) else '0',
+                            'substance_content': self.sample_table.item(row, 5).text() if self.sample_table.item(row, 5) else '',
+                            'scanning_method': self.sample_table.item(row, 6).text() if self.sample_table.item(row, 6) else '',
+                            'sample_status': self.sample_table.item(row, 7).text() if self.sample_table.item(row, 7) else '',
+                            'user_id': self.sample_table.item(row, 8).text() if self.sample_table.item(row, 8) else '',
+                            'creation_time': self.sample_table.item(row, 9).text() if self.sample_table.item(row, 9) else ''
+                        }
+                        selected.append(sample_data)
         return selected
 
     def on_ok_clicked(self):

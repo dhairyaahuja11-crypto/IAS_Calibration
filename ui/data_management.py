@@ -293,17 +293,17 @@ class DataManagementUI(QWidget):
         self.plot.figure.tight_layout()
         self.plot.canvas.draw()
     def on_export_clicked(self):
-        """Export ticked rows to CSV after user selects location."""
+        """Export each ticked sample as separate CSV with wavelength and absorbance columns."""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         import csv, os
 
-        # Open file dialog for folder selection or new folder creation
+        # Open file dialog for folder selection
         folder = QFileDialog.getExistingDirectory(self, "Select Export Folder")
         if not folder:
             return  # User cancelled
 
-        # Get ticked rows only
-        ticked_rows = []
+        # Get sample IDs from ticked rows
+        sample_ids = []
         for row_idx in range(self.table.rowCount()):
             cb_widget = self.table.cellWidget(row_idx, 0)
             if cb_widget is not None:
@@ -311,35 +311,89 @@ class DataManagementUI(QWidget):
                 if layout is not None and layout.count() > 0:
                     checkbox = layout.itemAt(0).widget()
                     if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
-                        row_data = []
-                        for col_idx in range(1, self.table.columnCount()):
-                            item = self.table.item(row_idx, col_idx)
-                            row_data.append(item.text() if item else "")
-                        ticked_rows.append(row_data)
+                        # Get sample_id from column 1 (ID column)
+                        id_item = self.table.item(row_idx, 1)
+                        if id_item:
+                            sample_ids.append(id_item.text())
 
-        print(f"Export: Found {len(ticked_rows)} ticked rows")
+        print(f"Export: Found {len(sample_ids)} ticked samples")
         
-        if not ticked_rows:
+        if not sample_ids:
             QMessageBox.information(self, "Export", "No rows ticked for export.")
             return
-        # Only export ticked rows
-        export_rows = ticked_rows
 
-        # Prepare CSV file path
-        csv_path = os.path.join(folder, "exported_data.csv")
-        headers = [self.table.horizontalHeaderItem(i).text() for i in range(1, self.table.columnCount())]
-
-        # Write to CSV
+        # Export each sample as separate CSV
         try:
-            print(f"Export: Writing to {csv_path}")
-            with open(csv_path, "w", newline='', encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(headers)
-                writer.writerows(export_rows)
-            print(f"Export: Successfully wrote {len(export_rows)} rows")
-            QMessageBox.information(self, "Export", f"Exported {len(export_rows)} rows to {csv_path}")
+            conn = self._get_db_connection()
+            if not conn:
+                QMessageBox.critical(self, "Database Error", "Failed to connect to database")
+                return
+            
+            cursor = conn.cursor()
+            exported_count = 0
+            
+            for sample_id in sample_ids:
+                # Get sample name and spectral data
+                query = """
+                    SELECT s.sample_name, s.sample_id, md.wave, md.absorb
+                    FROM sample s
+                    LEFT JOIN model_data md ON s.sample_id = md.sample_id
+                    WHERE s.sample_id = %s
+                """
+                cursor.execute(query, (sample_id,))
+                result = cursor.fetchone()
+                
+                if not result:
+                    print(f"Warning: No data found for sample_id {sample_id}")
+                    continue
+                
+                sample_name = result['sample_name']
+                wave_str = result['wave']
+                absorb_str = result['absorb']
+                
+                if not wave_str or not absorb_str:
+                    print(f"Warning: No spectral data for sample {sample_name}")
+                    continue
+                
+                # Parse wavelength and absorbance strings
+                try:
+                    wavelengths = [float(w) for w in wave_str.split(',')]
+                    absorbances = [float(a) for a in absorb_str.split(',')]
+                    
+                    if len(wavelengths) != len(absorbances):
+                        print(f"Warning: Wavelength/absorbance mismatch for {sample_name}")
+                        continue
+                    
+                    # Create filename: SampleName_SampleID.csv
+                    filename = f"{sample_name}_{sample_id}.csv"
+                    csv_path = os.path.join(folder, filename)
+                    
+                    # Write CSV with wavelength and value columns
+                    with open(csv_path, "w", newline='', encoding="utf-8") as f:
+                        writer = csv.writer(f)
+                        writer.writerow(['Wavelength', 'Value'])  # Header
+                        for wave, absorb in zip(wavelengths, absorbances):
+                            writer.writerow([wave, absorb])
+                    
+                    print(f"Exported: {filename}")
+                    exported_count += 1
+                    
+                except Exception as e:
+                    print(f"Error parsing spectral data for {sample_name}: {e}")
+                    continue
+            
+            cursor.close()
+            conn.close()
+            
+            if exported_count > 0:
+                QMessageBox.information(self, "Export", f"Successfully exported {exported_count} CSV file(s) to:\n{folder}")
+            else:
+                QMessageBox.warning(self, "Export", "No samples were exported. Check if selected samples have spectral data.")
+                
         except Exception as e:
             print(f"Export: Error occurred - {e}")
+            import traceback
+            traceback.print_exc()
             QMessageBox.critical(self, "Export Error", f"Failed to export: {e}")
 
     # ============= ACTIONS ============
@@ -407,6 +461,7 @@ class DataManagementUI(QWidget):
             FROM sample s
             LEFT JOIN model_data md ON s.sample_id = md.sample_id
             WHERE DATE(s.create_time) BETWEEN %s AND %s
+            AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
             """
             params = [date_from, date_to]
             if selected_instrument and selected_instrument.lower() != "all" and selected_instrument.lower() != "(none)":
@@ -571,20 +626,21 @@ class DataManagementUI(QWidget):
             
             cursor = conn.cursor()
             
-            # Delete from database (Option 1: Delete from both tables)
+            # Soft delete: Mark as deleted using sample_state flag
             deleted_count = 0
             for sample_id in sample_ids:
                 try:
-                    # Delete from model_data table first (contains spectral data)
-                    cursor.execute("DELETE FROM model_data WHERE sample_id = %s", (sample_id,))
-                    
-                    # Delete from sample table (contains sample metadata)
-                    cursor.execute("DELETE FROM sample WHERE sample_id = %s", (sample_id,))
+                    # Mark sample as deleted (soft delete)
+                    cursor.execute("""
+                        UPDATE sample 
+                        SET sample_state = 'Deleted'
+                        WHERE sample_id = %s
+                    """, (sample_id,))
                     
                     deleted_count += 1
-                    print(f"Deleted sample_id: {sample_id} from both sample and model_data tables")
+                    print(f"Soft deleted sample_id: {sample_id} (marked as Deleted)")
                 except Exception as e:
-                    print(f"Error deleting sample_id {sample_id}: {e}")
+                    print(f"Error soft deleting sample_id {sample_id}: {e}")
             
             conn.commit()
             cursor.close()
@@ -600,8 +656,8 @@ class DataManagementUI(QWidget):
             # Uncheck header checkbox (now managed by CheckBoxHeader)
             self.checkbox_header.setChecked(False)
             
-            QMessageBox.information(self, "Success", f"Successfully deleted {deleted_count} record(s) from database")
-            print(f"Batch deleted {deleted_count} records from both sample and model_data tables")
+            QMessageBox.information(self, "Success", f"Successfully marked {deleted_count} record(s) as deleted")
+            print(f"Soft deleted {deleted_count} records (marked as Deleted state)")
             
         except Exception as e:
             print(f"Error during batch deletion: {e}")
@@ -1133,27 +1189,8 @@ class DataManagementUI(QWidget):
                     "0"
                 ))
             
-            # ===== INSERT INTO project TABLE (optional) =====
-            project_id = self._get_or_create_project(cursor, data)
-            print(f"Project ID: {project_id}")
-            
-            # ===== INSERT INTO project_sample TABLE =====
-            if project_id:
-                project_sample_id = self._generate_project_sample_id(cursor)
-                insert_project_sample = """
-                INSERT INTO project_sample (id, project_id, sample_id, new_id, new_name)
-                VALUES (%s, %s, %s, %s, %s)
-                """
-                
-                print(f"Inserting into project_sample table...")
-                cursor.execute(insert_project_sample, (
-                    project_sample_id,
-                    project_id,
-                    sample_id,
-                    "",
-                    sample_name
-                ))
-                print(f"Successfully inserted into project_sample table")
+            # Auto-project creation disabled - only create samples during import
+            # Projects should be created manually through Project Management module
             
             # Commit all changes
             conn.commit()

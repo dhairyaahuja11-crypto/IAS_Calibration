@@ -226,11 +226,11 @@ class SampleManagementUI(QWidget):
         self.checkbox_header.setChecked(all_checked)
     
     def on_template_download_clicked(self):
-        """Export ticked rows to Excel template with specific headers"""
+        """Export single row per grouped sample to Excel template with display IDs"""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
-        # Collect ticked sample IDs from table
-        sample_ids = []
+        # Collect ticked rows with display IDs and sample info
+        template_data = []
         for row_idx in range(self.table.rowCount()):
             cb_widget = self.table.cellWidget(row_idx, 0)
             if cb_widget is not None:
@@ -238,15 +238,30 @@ class SampleManagementUI(QWidget):
                 if layout is not None and layout.count() > 0:
                     checkbox = layout.itemAt(0).widget()
                     if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
-                        # Get sample ID from column 1
-                        sample_id_item = self.table.item(row_idx, 1)
-                        if sample_id_item:
-                            try:
-                                sample_ids.append(int(sample_id_item.text()))
-                            except ValueError:
-                                pass
+                        # Get display ID from column 1 and sample name from column 2
+                        display_id_item = self.table.item(row_idx, 1)
+                        sample_name_item = self.table.item(row_idx, 2)
+                        
+                        if display_id_item and sample_name_item:
+                            display_id = display_id_item.text()
+                            sample_name = sample_name_item.text()
+                            
+                            # Get first actual sample ID to fetch substance content
+                            actual_sample_id = None
+                            if hasattr(self, '_original_samples'):
+                                for sample in self._original_samples:
+                                    if sample.get('sample_name') == sample_name:
+                                        actual_sample_id = sample.get('id')
+                                        break
+                            
+                            if actual_sample_id:
+                                template_data.append({
+                                    'display_id': display_id,
+                                    'sample_name': sample_name,
+                                    'actual_sample_id': actual_sample_id
+                                })
         
-        if not sample_ids:
+        if not template_data:
             QMessageBox.information(self, "Template Download", "No rows ticked for download.")
             return
         
@@ -261,9 +276,17 @@ class SampleManagementUI(QWidget):
         if not csv_path:
             return
         
-        # Fetch sample data from service
+        # Fetch sample data from service and replace IDs with display IDs
         try:
-            sample_data = SampleService.get_samples_for_template(sample_ids)
+            actual_ids = [int(item['actual_sample_id']) for item in template_data]
+            sample_data = SampleService.get_samples_for_template(actual_ids)
+            
+            # Replace actual sample_id with display_id for VLOOKUP compatibility
+            id_mapping = {int(item['actual_sample_id']): item['display_id'] for item in template_data}
+            for sample in sample_data:
+                actual_id = int(sample['sample_id'])
+                if actual_id in id_mapping:
+                    sample['sample_id'] = id_mapping[actual_id]
             
             # Export to CSV via service
             success, message = SampleService.export_template_to_excel(sample_data, csv_path)
@@ -311,7 +334,7 @@ class SampleManagementUI(QWidget):
     
     # ---------------- INQUIRY ----------------
     def on_inquiry_clicked(self):
-        """Fetch and display samples based on date range"""
+        """Fetch and display samples based on date range, grouped by sample_name"""
         try:
             # Get date range from UI
             date_from = self.date_from.date().toString("yyyy-MM-dd")
@@ -320,11 +343,53 @@ class SampleManagementUI(QWidget):
             # Fetch data from service layer
             samples = SampleService.get_samples_by_date(date_from, date_to)
             
-            # Clear and populate table with UI logic only
-            self._populate_table(samples)
+            # Store original samples for template download
+            self._original_samples = samples
             
-            if samples:
-                QMessageBox.information(self, "Success", f"Loaded {len(samples)} sample(s)")
+            # Group samples by sample_name (merge replicates)
+            grouped_samples = {}
+            for sample in samples:
+                sample_name = sample.get('sample_name', '')
+                if sample_name not in grouped_samples:
+                    # First occurrence - use this as representative
+                    grouped_samples[sample_name] = sample.copy()
+                    grouped_samples[sample_name]['sample_ids'] = [sample.get('id', '')]
+                    grouped_samples[sample_name]['replicate_count'] = 1
+                else:
+                    # Additional replicate - update count and IDs
+                    grouped_samples[sample_name]['sample_ids'].append(sample.get('id', ''))
+                    grouped_samples[sample_name]['replicate_count'] += 1
+                    
+                    # Always update substance_content if current sample has it (prefer non-empty)
+                    current_substance = sample.get('substance_content', '').strip()
+                    existing_substance = grouped_samples[sample_name].get('substance_content', '').strip()
+                    
+                    if current_substance and not existing_substance:
+                        # Current has content but existing doesn't - use current
+                        grouped_samples[sample_name]['substance_content'] = current_substance
+                    elif current_substance and existing_substance and len(current_substance) > len(existing_substance):
+                        # Both have content - use the longer/more complete one
+                        grouped_samples[sample_name]['substance_content'] = current_substance
+                    
+                    # Update scanned_number to sum all scans
+                    grouped_samples[sample_name]['scanned_number'] = str(
+                        int(grouped_samples[sample_name].get('scanned_number', 0)) + 
+                        int(sample.get('scanned_number', 0))
+                    )
+            
+            # Convert back to list with auto-incrementing IDs
+            merged_samples = []
+            for idx, (sample_name, sample_data) in enumerate(grouped_samples.items(), start=1):
+                sample_data['display_id'] = str(idx)  # Auto-increment ID for display
+                sample_data['actual_ids'] = sample_data['sample_ids']  # Keep real IDs for operations
+                sample_data['id'] = str(idx)  # Set display ID
+                merged_samples.append(sample_data)
+            
+            # Clear and populate table with merged data
+            self._populate_table(merged_samples)
+            
+            if merged_samples:
+                QMessageBox.information(self, "Success", f"Loaded {len(merged_samples)} sample(s) ({len(samples)} total including replicates)")
             else:
                 QMessageBox.information(self, "No Results", "No samples found for the selected date range.")
             
@@ -420,19 +485,47 @@ class SampleManagementUI(QWidget):
 
     # ---------------- MODIFY ----------------
     def open_modify_dialog(self):
-        # Get ticked samples
-        ticked_sample_ids = self._get_ticked_sample_ids()
+        # Count ticked rows (grouped samples), not total sample IDs
+        ticked_rows = []
+        for row_idx in range(self.table.rowCount()):
+            cb_widget = self.table.cellWidget(row_idx, 0)
+            if cb_widget is not None:
+                layout = cb_widget.layout()
+                if layout is not None and layout.count() > 0:
+                    checkbox = layout.itemAt(0).widget()
+                    if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
+                        ticked_rows.append(row_idx)
         
-        if not ticked_sample_ids:
+        if not ticked_rows:
             QMessageBox.information(self, "Information", "Please tick a sample to modify!")
             return
         
-        if len(ticked_sample_ids) > 1:
+        if len(ticked_rows) > 1:
             QMessageBox.information(self, "Information", "Please tick only one sample to modify!")
             return
         
+        # Get the first actual sample ID from the ticked row
+        row_idx = ticked_rows[0]
+        sample_name_item = self.table.item(row_idx, 2)
+        if not sample_name_item:
+            QMessageBox.warning(self, "Error", "Failed to get sample information")
+            return
+        
+        sample_name = sample_name_item.text()
+        
+        # Get the first actual sample ID for this sample name
+        sample_id = None
+        if hasattr(self, '_original_samples'):
+            for sample in self._original_samples:
+                if sample.get('sample_name') == sample_name:
+                    sample_id = sample.get('id')
+                    break
+        
+        if not sample_id:
+            QMessageBox.warning(self, "Error", "Failed to get sample ID")
+            return
+        
         # Fetch sample data from service
-        sample_id = ticked_sample_ids[0]
         sample_data = SampleService.get_sample_by_id(sample_id)
         
         if not sample_data:
@@ -473,7 +566,7 @@ class SampleManagementUI(QWidget):
             )
             return
         
-        # Delete samples directly (no spectrogram data found)
+        # Delete samples (no spectrogram data found - safe to delete)
         success, message = SampleService.delete_samples(sample_ids)
         
         if success:
@@ -484,7 +577,7 @@ class SampleManagementUI(QWidget):
             QMessageBox.critical(self, "Error", message)
     
     def _get_ticked_sample_ids(self):
-        """Helper to get list of ticked sample IDs from table"""
+        """Helper to get list of actual database sample IDs from ticked rows (handles grouped view)"""
         sample_ids = []
         for row_idx in range(self.table.rowCount()):
             cb_widget = self.table.cellWidget(row_idx, 0)
@@ -493,11 +586,16 @@ class SampleManagementUI(QWidget):
                 if layout is not None and layout.count() > 0:
                     checkbox = layout.itemAt(0).widget()
                     if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
-                        sample_id_item = self.table.item(row_idx, 1)
-                        if sample_id_item:
-                            # Sample IDs can be strings (timestamp-based) or integers
-                            sample_id = sample_id_item.text().strip()
-                            if sample_id:
-                                sample_ids.append(sample_id)
+                        # Get sample name from column 2 to find actual IDs
+                        sample_name_item = self.table.item(row_idx, 2)
+                        if sample_name_item:
+                            sample_name = sample_name_item.text()
+                            # Get actual sample IDs from original ungrouped samples
+                            if hasattr(self, '_original_samples'):
+                                for sample in self._original_samples:
+                                    if sample.get('sample_name') == sample_name:
+                                        sample_id = sample.get('id')
+                                        if sample_id and str(sample_id).strip():
+                                            sample_ids.append(sample_id)
         return sample_ids
 

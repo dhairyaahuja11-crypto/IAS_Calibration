@@ -437,33 +437,60 @@ class ProjectService:
                 has_linking_table = cursor.fetchone() is not None
                 
                 print(f"Debug - Has project_sample table: {has_linking_table}")
-                print(f"Debug - Number of samples to associate: {len(selected_samples)}")
                 
                 if has_linking_table:
-                    # Use linking table (without create_time column)
-                    samples_added = 0
-                    for idx, sample in enumerate(selected_samples):
-                        print(f"Debug - Processing sample {idx + 1}: {sample}")
-                        
-                        # Try multiple possible keys for sample_id
-                        sample_id = sample.get('id') or sample.get('sample_id') or sample.get('sample_name')
-                        print(f"Debug - Extracted sample_id: '{sample_id}' (type: {type(sample_id)})")
-                        
-                        if sample_id and str(sample_id).strip():
-                            print(f"  Inserting: project_id={project_id}, sample_id={sample_id}")
-                            try:
-                                cursor.execute("""
-                                    INSERT INTO project_sample (project_id, sample_id)
-                                    VALUES (%s, %s)
-                                """, (project_id, str(sample_id).strip()))
-                                print(f"  ✓ Sample {sample_id} associated")
-                                samples_added += 1
-                            except Exception as e:
-                                print(f"  ✗ Error associating sample {sample_id}: {e}")
-                        else:
-                            print(f"  ⚠ Warning: Skipping sample with empty/no ID: {sample}")
+                    # Show table structure to debug
+                    cursor.execute("SHOW CREATE TABLE project_sample")
+                    create_result = cursor.fetchone()
+                    print(f"Debug - project_sample CREATE TABLE:")
+                    for key, value in create_result.items():
+                        print(f"  {key}: {value}")
                     
-                    print(f"Total samples associated: {samples_added}/{len(selected_samples)}")
+                    cursor.execute("DESCRIBE project_sample")
+                    columns = cursor.fetchall()
+                    print(f"Debug - project_sample columns:")
+                    for col in columns:
+                        print(f"  {col}")
+                    
+                    # Check if table has an 'id' column
+                    has_id_column = any(col['Field'] == 'id' for col in columns)
+                    print(f"Debug - Has 'id' column: {has_id_column}")
+                
+                print(f"Debug - Number of samples to associate: {len(selected_samples)}")
+                print(f"Debug - First 3 samples: {selected_samples[:3] if len(selected_samples) > 0 else 'NONE'}")
+                
+                if has_linking_table:
+                    # Store ALL sample IDs including replicates
+                    all_sample_ids = []
+                    for sample in selected_samples:
+                        sample_id = sample.get('id') or sample.get('sample_id') or sample.get('sample_name')
+                        if sample_id and str(sample_id).strip():
+                            all_sample_ids.append(str(sample_id).strip())
+                    
+                    print(f"Debug - Total samples from selection: {len(selected_samples)}")
+                    print(f"Debug - Sample IDs to store (including all replicates): {len(all_sample_ids)}")
+                    print(f"Debug - Sample IDs list: {all_sample_ids[:5]}")
+                    
+                    # Insert ALL samples with generated unique IDs
+                    samples_added = 0
+                    for sample_id in all_sample_ids:
+                        try:
+                            # Generate unique ID for the project-sample association
+                            unique_id = f"{project_id}_{sample_id}"
+                            
+                            cursor.execute("""
+                                INSERT INTO project_sample (id, project_id, sample_id)
+                                VALUES (%s, %s, %s)
+                            """, (unique_id, project_id, sample_id))
+                            
+                            samples_added += 1
+                            print(f"  ✓ Associated sample {sample_id} with id={unique_id}")
+                        except Exception as e:
+                            print(f"  ✗ Error associating sample {sample_id}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    print(f"Total samples associated (including replicates): {samples_added}/{len(all_sample_ids)}")
                 else:
                     # Update samples directly to reference the project
                     for sample in selected_samples:

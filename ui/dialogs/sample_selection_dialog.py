@@ -283,8 +283,9 @@ class SampleSelectionDialog(QDialog):
         print(f"Table population complete. Row count: {self.sample_table.rowCount()}")
 
     def get_selected_samples(self):
-        """Get list of selected sample IDs (includes all replicates for grouped samples)"""
+        """Get list of selected sample IDs (includes ALL replicates)"""
         selected = []
+        
         for row in range(self.sample_table.rowCount()):
             checkbox_widget = self.sample_table.cellWidget(row, 0)
             if checkbox_widget:
@@ -296,7 +297,7 @@ class SampleSelectionDialog(QDialog):
                         # Fallback to single ID if sample_ids not set
                         sample_ids = [checkbox.property("sample_id")]
                     
-                    # Return data for each sample ID (all replicates)
+                    # Add ALL replicate sample IDs
                     for sample_id in sample_ids:
                         sample_data = {
                             'id': sample_id,

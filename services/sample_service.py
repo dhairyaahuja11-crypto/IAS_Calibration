@@ -620,13 +620,15 @@ class SampleService:
             return None
     
     @staticmethod
-    def batch_import_substance_content(file_path):
+    def batch_import_substance_content(file_path, selected_sample_ids=None):
         """
         Batch import substance content values from CSV file
         Matches samples by ID or Name and updates property values
         
         Args:
             file_path (str): Path to CSV file with substance content data
+            selected_sample_ids (list): List of sample_ids that are selected/checked in UI.
+                                       If provided, only these samples will be updated.
             
         Returns:
             tuple: (success: bool, message: str, updated_count: int)
@@ -709,8 +711,26 @@ class SampleService:
                     
                     # Get all sample IDs for this sample_name (all replicates)
                     db_sample_ids = [result['sample_id'] for result in results]
-                    # Get all sample IDs for this sample_name (all replicates)
-                    db_sample_ids = [result['sample_id'] for result in results]
+                    
+                    # 🔴 FILTER: Only update samples that were selected/checked in UI
+                    if selected_sample_ids:
+                        db_sample_ids = [
+                            sid for sid in db_sample_ids 
+                            if str(sid) in [str(s) for s in selected_sample_ids]
+                        ]
+                        
+                        if not db_sample_ids:
+                            errors.append(f"Row {idx+2}: Sample '{sample_name}' not in selected samples")
+                            continue
+                    if selected_sample_ids:
+                        db_sample_ids = [
+                            sid for sid in db_sample_ids 
+                            if str(sid) in [str(s) for s in selected_sample_ids]
+                        ]
+                        
+                        if not db_sample_ids:
+                            errors.append(f"Row {idx+2}: Sample '{sample_name}' not in selected samples")
+                            continue
                     
                     # Extract property values from CSV columns
                     properties = []

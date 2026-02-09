@@ -278,13 +278,13 @@ class SampleManagementUI(QWidget):
         
         # Fetch sample data from service and replace IDs with display IDs
         try:
-            actual_ids = [int(item['actual_sample_id']) for item in template_data]
+            actual_ids = [item['actual_sample_id'] for item in template_data]
             sample_data = SampleService.get_samples_for_template(actual_ids)
             
             # Replace actual sample_id with display_id for VLOOKUP compatibility
-            id_mapping = {int(item['actual_sample_id']): item['display_id'] for item in template_data}
+            id_mapping = {item['actual_sample_id']: item['display_id'] for item in template_data}
             for sample in sample_data:
-                actual_id = int(sample['sample_id'])
+                actual_id = sample['sample_id']
                 if actual_id in id_mapping:
                     sample['sample_id'] = id_mapping[actual_id]
             
@@ -304,6 +304,13 @@ class SampleManagementUI(QWidget):
         """Import substance content values from CSV file"""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
+        # Get selected (checked) samples from the table using existing method
+        selected_samples = self._get_ticked_sample_ids()
+        
+        if not selected_samples:
+            QMessageBox.warning(self, "Warning", "Please select samples by checking them first!")
+            return
+        
         # Show file open dialog
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -315,9 +322,12 @@ class SampleManagementUI(QWidget):
         if not file_path:
             return
         
-        # Import via service layer
+        # Import via service layer - pass selected samples
         try:
-            success, message, updated_count = SampleService.batch_import_substance_content(file_path)
+            success, message, updated_count = SampleService.batch_import_substance_content(
+                file_path, 
+                selected_sample_ids=selected_samples
+            )
             
             # Always refresh table to show any updates
             self.on_inquiry_clicked()

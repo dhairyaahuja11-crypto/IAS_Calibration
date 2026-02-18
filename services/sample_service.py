@@ -15,14 +15,18 @@ class SampleService:
     """Service class for sample management operations"""
     
     @staticmethod
-    def get_samples_by_date(date_from, date_to):
+    def get_samples_by_date(date_from, date_to, sample_name=None, user_id=None, sample_status=None):
         """
         INQUIRY BUTTON
-        Fetch samples based on creation date range
+        Fetch samples based on creation date range and optional filters
+        Each model_data entry (import) is shown as a separate row
         
         Args:
             date_from (str): Start date in 'YYYY-MM-DD' format
             date_to (str): End date in 'YYYY-MM-DD' format
+            sample_name (str, optional): Filter by sample name (partial match)
+            user_id (str, optional): Filter by user ID (partial match)
+            sample_status (str, optional): Filter by sample status ('Not Collected', 'Collected', 'Completed')
             
         Returns:
             list: List of sample dictionaries with all fields
@@ -33,7 +37,7 @@ class SampleService:
             
             query = """
                 SELECT 
-                    s.sample_id as id,
+                    md.model_id as id,
                     s.sample_name as sample_name,
                     s.model_num as sample_quantity,
                     s.model_wavemin as initial_wavelength,
@@ -92,16 +96,17 @@ class SampleService:
                             ELSE NULL
                         END
                     ) as substance_content,
-                    COUNT(md.sample_id) as scanned_number,
+                    1 as scanned_number,
                     CASE 
                         WHEN s.sample_status = '0' THEN 'Not collected'
                         WHEN s.sample_status = '1' THEN 'Collected'
                         ELSE 'Not collected'
                     END as sample_status,
                     s.create_person as user_id,
-                    DATE_FORMAT(s.create_time, '%%Y-%%m-%%d %%H:%%i') as creation_time
-                FROM sample s
-                LEFT JOIN model_data md ON s.sample_id = md.sample_id
+                    DATE_FORMAT(md.create_time, '%%Y-%%m-%%d %%H:%%i:%%s') as creation_time,
+                    s.sample_id as sample_id
+                FROM model_data md
+                INNER JOIN sample s ON md.sample_id = s.sample_id
                 LEFT JOIN content_dictionary cd1 ON CAST(s.property_name1 AS UNSIGNED) = cd1.id
                 LEFT JOIN content_dictionary cd2 ON CAST(s.property_name2 AS UNSIGNED) = cd2.id
                 LEFT JOIN content_dictionary cd3 ON CAST(s.property_name3 AS UNSIGNED) = cd3.id
@@ -112,17 +117,40 @@ class SampleService:
                 LEFT JOIN content_dictionary cd8 ON CAST(s.property_name8 AS UNSIGNED) = cd8.id
                 LEFT JOIN content_dictionary cd9 ON CAST(s.property_name9 AS UNSIGNED) = cd9.id
                 LEFT JOIN content_dictionary cd10 ON CAST(s.property_name10 AS UNSIGNED) = cd10.id
-                WHERE DATE(s.create_time) BETWEEN %s AND %s
+                WHERE DATE(md.create_time) BETWEEN %s AND %s
                 AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
-                GROUP BY s.sample_id
-                ORDER BY s.create_time DESC
             """
             
-            print(f"Executing query with dates: {date_from} to {date_to}")
-            cursor.execute(query, (date_from, date_to))
+            # Build dynamic WHERE conditions
+            params = [date_from, date_to]
+            
+            if sample_name and sample_name.strip():
+                query += " AND s.sample_name LIKE %s"
+                params.append(f"%{sample_name.strip()}%")
+            
+            if user_id and user_id.strip():
+                query += " AND s.create_person LIKE %s"
+                params.append(f"%{user_id.strip()}%")
+            
+            if sample_status and sample_status.strip() and sample_status.lower() != 'all':
+                # Map UI strings to database values
+                status_map = {
+                    'not collected': '0',
+                    'collected': '1',
+                    'completed': '2'
+                }
+                db_status = status_map.get(sample_status.lower())
+                if db_status:
+                    query += " AND s.sample_status = %s"
+                    params.append(db_status)
+            
+            query += " ORDER BY md.create_time DESC"
+            
+            print(f"Executing query with dates: {date_from} to {date_to}, sample_name: {sample_name}, user_id: {user_id}, sample_status: {sample_status}")
+            cursor.execute(query, tuple(params))
             samples = cursor.fetchall()
             
-            print(f"Found {len(samples)} samples")
+            print(f"Found {len(samples)} sample imports (each model_data entry shown separately)")
             
             cursor.close()
             conn.close()
@@ -681,11 +709,20 @@ class SampleService:
             updated_count = 0
             errors = []
             
-            # Process each row in Excel
+            # Process each row in CSV
             for idx, row in df.iterrows():
                 try:
-                    # Get sample name - this is the primary key for matching
+                    # Get sample ID (model_id from UI) and sample name for matching
+                    model_id = None
                     sample_name = None
+                    
+                    if 'sample id' in df.columns and pd.notna(row['sample id']):
+                        value = row['sample id']
+                        if isinstance(value, (int, float)):
+                            model_id = str(int(value))
+                        else:
+                            model_id = str(value).strip()
+                    
                     if 'sample name' in df.columns and pd.notna(row['sample name']):
                         value = row['sample name']
                         if isinstance(value, (int, float)):
@@ -693,23 +730,28 @@ class SampleService:
                         else:
                             sample_name = str(value).strip()
                     
-                    if not sample_name:
-                        errors.append(f"Row {idx+2}: Missing sample name")
+                    # Need both ID and name for precise matching
+                    if not model_id or not sample_name:
+                        errors.append(f"Row {idx+2}: Missing sample ID or sample name")
                         continue
                     
-                    # Find ALL samples with this sample_name in database 
-                    # (since grouped samples may have multiple replicates with same name)
-                    cursor.execute(
-                        "SELECT sample_id FROM sample WHERE sample_name = %s AND (sample_state IS NULL OR sample_state != 'Deleted')",
-                        (sample_name,)
-                    )
+                    # Find sample_ids for this specific model_id (specific import)
+                    # This ensures we only update the exact import, not all samples with same name
+                    cursor.execute("""
+                        SELECT s.sample_id, s.sample_name
+                        FROM sample s
+                        INNER JOIN model_data md ON s.sample_id = md.sample_id
+                        WHERE md.model_id = %s 
+                          AND s.sample_name = %s
+                          AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
+                    """, (model_id, sample_name))
                     
                     results = cursor.fetchall()
                     if not results:
-                        errors.append(f"Row {idx+2}: Sample '{sample_name}' not found")
+                        errors.append(f"Row {idx+2}: Sample ID '{model_id}' with name '{sample_name}' not found")
                         continue
                     
-                    # Get all sample IDs for this sample_name (all replicates)
+                    # Get sample IDs for this specific model_id
                     db_sample_ids = [result['sample_id'] for result in results]
                     
                     # 🔴 FILTER: Only update samples that were selected/checked in UI
@@ -720,13 +762,8 @@ class SampleService:
                         ]
                         
                         if not db_sample_ids:
-                            errors.append(f"Row {idx+2}: Sample '{sample_name}' not in selected samples")
+                            errors.append(f"Row {idx+2}: Sample ID '{model_id}' not in selected samples")
                             continue
-                    if selected_sample_ids:
-                        db_sample_ids = [
-                            sid for sid in db_sample_ids 
-                            if str(sid) in [str(s) for s in selected_sample_ids]
-                        ]
                         
                         if not db_sample_ids:
                             errors.append(f"Row {idx+2}: Sample '{sample_name}' not in selected samples")

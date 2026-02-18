@@ -90,6 +90,9 @@ class AnalysisMeasureUI(QWidget):
             "actual value", "measurement value", "relative error"
         ])
         self.table.horizontalHeader().setStretchLastSection(True)
+        
+        # Install event filter to detect clicks on empty table space
+        self.table.viewport().installEventFilter(self)
 
         middle_layout.addWidget(self.table, 5)
 
@@ -115,3 +118,23 @@ class AnalysisMeasureUI(QWidget):
         middle_layout.addLayout(metrics_layout, 1)
 
         main_layout.addLayout(middle_layout)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Filter events to detect clicks on empty table space"""
+        from PyQt6.QtCore import QEvent
+        
+        if obj == self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            index = self.table.indexAt(event.pos())
+            if not index.isValid():
+                self.table.clearSelection()
+                return True
+        
+        return super().eventFilter(obj, event)

@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QDateEdit, QMessageBox
 )
 from PyQt6.QtCore import QDate
+from ui.custom_widgets import DateEditWithToday
 
 # ✅ CORRECT import
 from ui.dialogs.model_export_equipment_dialog import (
@@ -43,12 +44,10 @@ class ModelManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 0, 8)
 
-        self.date_from = QDateEdit(QDate.currentDate().addMonths(-1))
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday(QDate.currentDate().addMonths(-1))
         self.date_from.setDisplayFormat("dd MMMM yyyy")
 
-        self.date_to = QDateEdit(QDate.currentDate())
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday(QDate.currentDate())
         self.date_to.setDisplayFormat("dd MMMM yyyy")
 
         filter_layout.addWidget(self.date_from, 0, 9)
@@ -67,12 +66,14 @@ class ModelManagementUI(QWidget):
         self.btn_export_equipment = QPushButton(
             "Export Model File for IAS Equipment"
         )
+        self.btn_clear_selection = QPushButton("Clear Selection")
 
         btn_layout.addWidget(self.btn_inquiry)
         btn_layout.addWidget(self.btn_delete)
         btn_layout.addWidget(self.btn_export)
         btn_layout.addWidget(self.btn_export_ias)
         btn_layout.addWidget(self.btn_export_equipment)
+        btn_layout.addWidget(self.btn_clear_selection)
         btn_layout.addStretch()
 
         main_layout.addLayout(btn_layout)
@@ -88,6 +89,9 @@ class ModelManagementUI(QWidget):
         self.table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
+        
+        # Install event filter to detect clicks on empty table space
+        self.table.viewport().installEventFilter(self)
 
         main_layout.addWidget(self.table)
 
@@ -97,6 +101,31 @@ class ModelManagementUI(QWidget):
             self.open_export_equipment_dialog
         )
         self.btn_delete.clicked.connect(self.delete_model)
+        self.btn_clear_selection.clicked.connect(self.on_clear_selection_clicked)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Filter events to detect clicks on empty table space"""
+        from PyQt6.QtCore import QEvent
+        
+        if obj == self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            index = self.table.indexAt(event.pos())
+            if not index.isValid():
+                self.table.clearSelection()
+                return True
+        
+        return super().eventFilter(obj, event)
+    
+    def on_clear_selection_clicked(self):
+        """Clear all row selections"""
+        self.table.clearSelection()
 
     # ================= ACTIONS =================
     def open_export_equipment_dialog(self):

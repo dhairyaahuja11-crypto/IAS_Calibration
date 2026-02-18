@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidget, QFrame,
     QDoubleSpinBox, QTableWidgetItem, QMessageBox
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
 import pyqtgraph as pg
 import os
@@ -34,6 +34,26 @@ class DataSelectionUI(QWidget):
         self.set_validation_btn.clicked.connect(self.on_set_validation_clicked)
         self.spectral_average_btn.clicked.connect(self.on_spectral_average_clicked)
         self.avg_ok_btn.clicked.connect(self.on_avg_ok_clicked)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Filter events to detect clicks on empty table space"""
+        from PyQt6.QtCore import QEvent
+        
+        if obj == self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            index = self.table.indexAt(event.pos())
+            if not index.isValid():
+                self.table.clearSelection()
+                return True
+        
+        return super().eventFilter(obj, event)
     
     def on_set_calibration_clicked(self):
         """Mark selected samples as calibration"""
@@ -105,7 +125,12 @@ class DataSelectionUI(QWidget):
                     if len(wavelengths) == len(absorbances) and len(wavelengths) > 0:
                         # Generate random color for each spectrum
                         color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
-                        self.plot.plot(wavelengths, absorbances, pen=pg.mkPen(color=color, width=2))
+                        self.plot.plot(
+                            wavelengths, absorbances, 
+                            pen=pg.mkPen(color=color, width=1),
+                            antialias=True,
+                            connect='all'
+                        )
                         successful_plots += 1
             except Exception as e:
                 print(f"Error plotting spectrum: {e}")
@@ -176,6 +201,7 @@ class DataSelectionUI(QWidget):
             # Fetch project info to get measurement index
             project_info = DataSelectionService.get_project_info(project_id)
             measurement_index = project_info.get('analysis_object', 'Protein') if project_info else 'Protein'
+            self.current_measurement_index = measurement_index  # Store for later use
             
             # Update table header with measurement index
             self.table.setHorizontalHeaderItem(8, QTableWidgetItem(measurement_index))
@@ -413,8 +439,17 @@ class DataSelectionUI(QWidget):
         print(f"Extracted {len(samples_data)} samples from project")
         return samples_data
     
-    def _calculate_spectral_average(self, samples_data):
-        """Calculate spectral average for samples grouped by sample_name"""
+    def _calculate_spectral_average(self, samples_data, tolerance=0.5):
+        """
+        Calculate spectral average for samples grouped by sample_name with wavelength matching.
+        
+        Args:
+            samples_data: List of sample dictionaries with wavelengths and absorbances
+            tolerance: Maximum allowed wavelength difference in nm (default: 0.5)
+        
+        Returns:
+            List of averaged sample dictionaries
+        """
         # Group samples by sample_name
         grouped = {}
         for sample in samples_data:
@@ -423,22 +458,83 @@ class DataSelectionUI(QWidget):
                 grouped[name] = []
             grouped[name].append(sample)
         
-        print(f"\nSpectral Averaging Summary:")
+        print(f"\nSpectral Averaging Summary (with wavelength matching):")
         print(f"Total unique samples: {len(grouped)}")
+        print(f"Wavelength tolerance: {tolerance} nm")
         for name, replicates in grouped.items():
             print(f"  {name}: {len(replicates)} replicate(s)")
         
         # Calculate average for each group
         averaged_data = []
         for sample_name, replicates in grouped.items():
-            # Use the first replicate's wavelengths (should be same for all)
-            wavelengths = replicates[0]['wavelengths']
+            # Use the first replicate as reference
+            ref_wavelengths = np.array(replicates[0]['wavelengths'])
+            ref_absorbances = np.array(replicates[0]['absorbances'])
             
-            # Collect all absorbance arrays
-            all_absorbances = [rep['absorbances'] for rep in replicates]
+            # For single replicate, no averaging needed
+            if len(replicates) == 1:
+                averaged_data.append({
+                    'sample_name': sample_name,
+                    'replicate_count': 1,
+                    'wavelengths': ref_wavelengths.tolist(),
+                    'absorbances': ref_absorbances.tolist(),
+                    'property_value': replicates[0]['property_value'],
+                    'sample_type': replicates[0]['sample_type'],
+                    'original_sample_ids': [replicates[0]['sample_id']],
+                    'wavelength_matched': False
+                })
+                continue
             
-            # Calculate mean absorbance at each wavelength
-            avg_absorbances = np.mean(all_absorbances, axis=0).tolist()
+            # Collect absorbances aligned to reference wavelengths
+            aligned_absorbances = [ref_absorbances]
+            matched_count = 1
+            skipped_replicates = []
+            
+            # Process remaining replicates
+            for i, rep in enumerate(replicates[1:], start=1):
+                rep_wavelengths = np.array(rep['wavelengths'])
+                rep_absorbances = np.array(rep['absorbances'])
+                
+                # Validate wavelength range coverage
+                if (rep_wavelengths[0] > ref_wavelengths[0] + tolerance or 
+                    rep_wavelengths[-1] < ref_wavelengths[-1] - tolerance):
+                    print(f"    WARNING: Replicate {i+1} wavelength range mismatch - skipping")
+                    skipped_replicates.append(i)
+                    continue
+                
+                # Align this replicate's absorbances to reference wavelengths
+                aligned_abs = np.zeros_like(ref_absorbances)
+                all_within_tolerance = True
+                
+                for j, ref_wl in enumerate(ref_wavelengths):
+                    # Find closest wavelength index using np.argmin(np.abs(...))
+                    closest_idx = np.argmin(np.abs(rep_wavelengths - ref_wl))
+                    closest_wl = rep_wavelengths[closest_idx]
+                    
+                    # Check if within tolerance
+                    if np.abs(closest_wl - ref_wl) > tolerance:
+                        print(f"    WARNING: Replicate {i+1} wavelength {ref_wl:.2f} nm "
+                              f"not matched (closest: {closest_wl:.2f} nm, "
+                              f"difference: {abs(closest_wl - ref_wl):.2f} nm) - skipping replicate")
+                        all_within_tolerance = False
+                        break
+                    
+                    # Use the matched absorbance value
+                    aligned_abs[j] = rep_absorbances[closest_idx]
+                
+                if all_within_tolerance:
+                    aligned_absorbances.append(aligned_abs)
+                    matched_count += 1
+                else:
+                    skipped_replicates.append(i)
+            
+            # Calculate mean absorbance across aligned replicates
+            # Inclusive of all matched replicates [0:matched_count]
+            avg_absorbances = np.mean(aligned_absorbances, axis=0)
+            
+            if skipped_replicates:
+                print(f"    Note: Used {matched_count}/{len(replicates)} replicates "
+                      f"(skipped: {skipped_replicates})")
             
             # Use first replicate's metadata
             first_rep = replicates[0]
@@ -446,11 +542,14 @@ class DataSelectionUI(QWidget):
             averaged_data.append({
                 'sample_name': sample_name,
                 'replicate_count': len(replicates),
-                'wavelengths': wavelengths,
-                'absorbances': avg_absorbances,
+                'matched_count': matched_count,
+                'wavelengths': ref_wavelengths.tolist(),
+                'absorbances': avg_absorbances.tolist(),
                 'property_value': first_rep['property_value'],
                 'sample_type': first_rep['sample_type'],
-                'original_sample_ids': [rep['sample_id'] for rep in replicates]
+                'original_sample_ids': [rep['sample_id'] for rep in replicates],
+                'wavelength_matched': True,
+                'skipped_replicates': skipped_replicates
             })
         
         return averaged_data
@@ -480,9 +579,11 @@ class DataSelectionUI(QWidget):
             'metadata': {
                 'project_name': self.project_cb.currentText(),
                 'project_id': self.project_cb.currentData(),
+                'measurement_index': getattr(self, 'current_measurement_index', 'Protein'),
                 'timestamp': timestamp,
                 'data_type': data_type,
-                'total_samples': len(data)
+                'total_samples': len(data),
+                'cropped': False  # Mark fresh data as not cropped
             },
             'samples': data
         }
@@ -574,6 +675,11 @@ class DataSelectionUI(QWidget):
             print(f"Error loading instruments: {e}")
             import traceback
             traceback.print_exc()
+    
+    def refresh_dropdowns(self):
+        """Refresh project and instrument dropdowns - called when tab becomes active"""
+        self._load_projects()
+        self._load_instruments()
 
 
     def _build_ui(self):
@@ -699,6 +805,10 @@ class DataSelectionUI(QWidget):
         # Set selection behavior to select entire rows
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
+        
+        # Install event filter to detect clicks on empty table space
+        self.table.viewport().installEventFilter(self)
+        
         bottom_row.addWidget(self.table, 3)
         
         # --- Plot ---
@@ -708,6 +818,8 @@ class DataSelectionUI(QWidget):
         self.plot.setLabel("bottom", "wavelength")
         self.plot.showGrid(x=True, y=True)
         self.plot.setTitle("60 absorbance spectrums of calibration set")
+        # Enable antialiasing for smooth lines
+        self.plot.setAntialiasing(True)
         bottom_row.addWidget(self.plot, 2)
         
         main_layout.addLayout(bottom_row)

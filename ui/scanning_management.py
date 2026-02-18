@@ -1,9 +1,11 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QLineEdit,
     QVBoxLayout, QHBoxLayout, QGridLayout,
-    QTableWidget, QDateEdit
+    QTableWidget
 )
 from PyQt6.QtCore import QDate
+
+from ui.custom_widgets import DateEditWithToday
 
 from ui.dialogs.data_scanning_dialog import DataScanningDialog
 from ui.dialogs.dlp_test_dialog import DLPTestDialog
@@ -36,12 +38,10 @@ class ScanningManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 1, 0)
 
-        self.date_from = QDateEdit(QDate.currentDate().addMonths(-1))
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday(QDate.currentDate().addMonths(-1))
         self.date_from.setDisplayFormat("dd MMMM yyyy")
 
-        self.date_to = QDateEdit(QDate.currentDate())
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday(QDate.currentDate())
         self.date_to.setDisplayFormat("dd MMMM yyyy")
 
         filter_layout.addWidget(self.date_from, 1, 1)

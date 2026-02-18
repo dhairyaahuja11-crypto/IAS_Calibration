@@ -38,17 +38,49 @@ class MainWindow(QMainWindow):
         self.tabs.setTabsClosable(False)
 
         # ---- ADD TABS (ORDER MATTERS) ----
-        self.tabs.addTab(DataManagementUI(), "data management")
-        self.tabs.addTab(SampleManagementUI(), "sample management")
-        self.tabs.addTab(ProjectManagementUI(), "project management")
-        self.tabs.addTab(CalibrationMainUI(), "calibration")
-        self.tabs.addTab(ModelManagementUI(), "model management")
-        self.tabs.addTab(InstrumentManagementUI(), "instrument management")
-        self.tabs.addTab(ScanningManagementUI(), "scanning management")
-        self.tabs.addTab(MeasurementDemoUI(), "measurement(demo)")
+        self.data_management_tab = DataManagementUI()
+        self.tabs.addTab(self.data_management_tab, "data management")
+        self.sample_management_tab = SampleManagementUI()
+        self.tabs.addTab(self.sample_management_tab, "sample management")
+        self.project_management_tab = ProjectManagementUI()
+        self.tabs.addTab(self.project_management_tab, "project management")
+        self.calibration_tab = CalibrationMainUI()
+        self.tabs.addTab(self.calibration_tab, "calibration")
+        self.model_management_tab = ModelManagementUI()
+        self.tabs.addTab(self.model_management_tab, "model management")
+        self.instrument_management_tab = InstrumentManagementUI()
+        self.tabs.addTab(self.instrument_management_tab, "instrument management")
+        self.scanning_management_tab = ScanningManagementUI()
+        self.tabs.addTab(self.scanning_management_tab, "scanning management")
+        self.measurement_demo_tab = MeasurementDemoUI()
+        self.tabs.addTab(self.measurement_demo_tab, "measurement(demo)")
+
+        # Connect tab change signal for auto-refresh
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        
+        # Connect project changes to calibration refresh
+        self.project_management_tab.project_changed.connect(self.calibration_tab.refresh_data)
 
         main_layout.addWidget(self.tabs)
         self.setCentralWidget(central_widget)
+    
+    def _on_tab_changed(self, index):
+        """Refresh data when switching tabs (only if data was previously loaded)"""
+        current_tab = self.tabs.widget(index)
+        
+        try:
+            if current_tab == self.sample_management_tab:
+                # Only auto-refresh if inquiry has been run before
+                if hasattr(self.sample_management_tab, '_inquiry_run') and self.sample_management_tab._inquiry_run:
+                    self.sample_management_tab.on_inquiry_clicked(silent=True)
+            elif current_tab == self.project_management_tab:
+                # Only auto-refresh if inquiry has been run before
+                if hasattr(self.project_management_tab, '_inquiry_run') and self.project_management_tab._inquiry_run:
+                    self.project_management_tab.load_projects(silent=True)
+            elif current_tab == self.calibration_tab:
+                self.calibration_tab.refresh_data()
+        except Exception as e:
+            print(f"Error refreshing tab: {e}")
 
 
 def main():
@@ -62,5 +94,4 @@ if __name__ == "__main__":
     main()
 
  
-
 

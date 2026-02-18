@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidget,
     QSplitter, QDateEdit, QMessageBox, QTableWidgetItem, QCheckBox, QHeaderView
 )
+from ui.custom_widgets import DateEditWithToday
 
 # Ensure QTableWidgetItem is imported before subclassing
 
@@ -34,6 +35,9 @@ from ui.plot_widget import PlotWidget
 
 # 👉 IMPORT THE DIALOG
 from ui.dialogs.data_import_dialog import DataImportDialog
+
+# 👉 IMPORT SHARED SERVICE
+from services.spectral_import_service import SpectralImportService
 
 
 class CustomTableWidget(QTableWidget):
@@ -120,14 +124,12 @@ class DataManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 0, 0)
 
-        self.date_from = QDateEdit()
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday()
         self.date_from.setDate(QDate.currentDate().addDays(-7))
         self.date_from.setDisplayFormat("dd MMMM yyyy")
         self.date_from.setMinimumWidth(150)
 
-        self.date_to = QDateEdit()
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday()
         self.date_to.setDate(QDate.currentDate())
         self.date_to.setDisplayFormat("dd MMMM yyyy")
         self.date_to.setMinimumWidth(150)
@@ -171,6 +173,7 @@ class DataManagementUI(QWidget):
         self.btn_inquiry = QPushButton("Inquiry")
         self.btn_batch_delete = QPushButton("Batch Deletion")
         self.btn_tick = QPushButton("Tick")
+        self.btn_clear_selection = QPushButton("Clear Selection")
         self.btn_export = QPushButton("Data Export")
         self.btn_import = QPushButton("Data Import")
         self.btn_spectrogram = QPushButton("Spectrogram Display")
@@ -178,6 +181,7 @@ class DataManagementUI(QWidget):
         btn_layout.addWidget(self.btn_inquiry)
         btn_layout.addWidget(self.btn_batch_delete)
         btn_layout.addWidget(self.btn_tick)
+        btn_layout.addWidget(self.btn_clear_selection)
         btn_layout.addWidget(self.btn_export)
         btn_layout.addWidget(self.btn_import)
         btn_layout.addWidget(self.btn_spectrogram)
@@ -237,26 +241,123 @@ class DataManagementUI(QWidget):
         self.btn_import.clicked.connect(self.open_data_import_dialog)
         self.btn_inquiry.clicked.connect(self.on_inquiry_clicked)
         self.btn_tick.clicked.connect(self.on_tick_clicked)
+        self.btn_clear_selection.clicked.connect(self.on_clear_selection_clicked)
         self.btn_batch_delete.clicked.connect(self.on_batch_delete_clicked)
         self.btn_export.clicked.connect(self.on_export_clicked)
         self.btn_spectrogram.clicked.connect(self.on_spectrogram_display_clicked)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def on_clear_selection_clicked(self):
+        """Clear all row selections"""
+        self.table.clearSelection()
 
     def on_spectrogram_display_clicked(self):
-        """Universal spectrogram display: select file or folder, ignore case, plot all valid CSVs."""
+        """Display spectra: for ticked rows from DB, or browse folder if nothing ticked."""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         import pandas as pd
         import matplotlib.pyplot as plt
         import os
+        import numpy as np
+        import matplotlib.cm as cm
 
-        # Only allow folder selection
+        # First, check if any rows are ticked
+        ticked_rows = []
+        row_count = self.table.rowCount()
+        for row_idx in range(row_count):
+            cb_widget = self.table.cellWidget(row_idx, 0)
+            if cb_widget is not None:
+                layout = cb_widget.layout()
+                if layout is not None and layout.count() > 0:
+                    checkbox = layout.itemAt(0).widget()
+                    if isinstance(checkbox, QCheckBox):
+                        if checkbox.isChecked():
+                            ticked_rows.append(row_idx)
+        
+        # If rows are ticked, display their spectra from database
+        if ticked_rows:
+            sample_ids = []
+            for row_idx in ticked_rows:
+                id_item = self.table.item(row_idx, 1)
+                if id_item:
+                    sample_ids.append(id_item.text())
+            
+            if not sample_ids:
+                QMessageBox.warning(self, "Error", "Could not retrieve sample IDs")
+                return
+            
+            # Fetch spectral data from database
+            try:
+                conn = self._get_db_connection()
+                if not conn:
+                    QMessageBox.critical(self, "Database Error", "Failed to connect to database")
+                    return
+                
+                cursor = conn.cursor()
+                all_wavelengths = []
+                all_absorbances = []
+                sample_names = []
+                
+                for sample_id in sample_ids:
+                    query = """
+                        SELECT s.sample_name, s.sample_id, md.wave, md.absorb
+                        FROM sample s
+                        LEFT JOIN model_data md ON s.sample_id = md.sample_id
+                        WHERE s.sample_id = %s
+                    """
+                    cursor.execute(query, (sample_id,))
+                    result = cursor.fetchone()
+                    
+                    if result and result['wave'] and result['absorb']:
+                        sample_names.append(result['sample_name'])
+                        wavelengths = [float(w) for w in result['wave'].split(',')]
+                        absorbances = [float(a) for a in result['absorb'].split(',')]
+                        all_wavelengths.append(wavelengths)
+                        all_absorbances.append(absorbances)
+                
+                conn.close()
+                
+                # Plot the spectra
+                self.plot.clear()
+                if len(all_wavelengths) == 0:
+                    QMessageBox.warning(self, "No Data", "No spectral data found for selected samples")
+                    return
+                
+                color_map = cm.get_cmap('tab10')
+                for i, (wavelength, absorbance, name) in enumerate(zip(all_wavelengths, all_absorbances, sample_names)):
+                    color = color_map(i % 10)
+                    self.plot.ax.plot(wavelength, absorbance, linestyle='solid', color=color, linewidth=0.5, 
+                                     antialiased=True, solid_capstyle='round', solid_joinstyle='round', label=name)
+                
+                self.plot.ax.set_xlabel('Wavelength (nm)')
+                self.plot.ax.set_ylabel('Absorbance')
+                self.plot.ax.set_title(f'Spectrogram Display ({len(sample_names)} Selected Samples)')
+                self.plot.ax.grid(True, alpha=0.3)
+                if len(sample_names) <= 10:  # Only show legend if not too many samples
+                    self.plot.ax.legend(loc='best', fontsize=8)
+                self.plot.figure.tight_layout()
+                self.plot.canvas.draw()
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to fetch spectral data:\n{str(e)}")
+                import traceback
+                traceback.print_exc()
+            
+            return
+        
+        # If no rows are ticked, show folder dialog (original behavior)
         folder_path = QFileDialog.getExistingDirectory(self, "Select a folder of CSVs")
         if not folder_path:
             return
 
-        import numpy as np
         all_wavelengths = []
         all_absorbances = []
-        import matplotlib.cm as cm
         color_map = cm.get_cmap('tab10')
         file_count = 0
         for fname in os.listdir(folder_path):
@@ -284,7 +385,8 @@ class DataManagementUI(QWidget):
             return
         for i, (wavelength, absorbance) in enumerate(zip(all_wavelengths, all_absorbances)):
             color = color_map(i % 10)
-            self.plot.ax.plot(wavelength, absorbance, marker='o', markersize=0.5, linestyle='-', color=color, linewidth=1)
+            self.plot.ax.plot(wavelength, absorbance, linestyle='solid', color=color, linewidth=1.0, 
+                             antialiased=True, solid_capstyle='round', solid_joinstyle='round')
         self.plot.ax.set_xlabel('Wavelength (nm)')
         self.plot.ax.set_ylabel('Absorbance')
         self.plot.ax.set_title('Spectrogram Display (All Files)')
@@ -451,7 +553,6 @@ class DataManagementUI(QWidget):
                 s.sample_name as sample_name,
                 md.device_id as instrument,
                 md.model_sno as lot_number,
-                md.model_sno as serial_number,
                 md.model_length as wavelength_points,
                 md.wave as wavelength,
                 md.absorb as absorbance,
@@ -504,7 +605,11 @@ class DataManagementUI(QWidget):
                     row_data['id'] = int(row_data['id'])
                 except Exception:
                     row_data['id'] = 0
-                # Set each column in the order: ID, Sample Name, Instrument, Lot Number, Serial Number, Wavelength Points, Wavelength, Absorbance, Detector Temp, Humidity, Creation Time
+                
+                # Clean up creation time
+                creation_time = self._format_creation_time(row_data.get('creation_time', ''))
+                
+                # Set each column in the order: ID, Sample Name, Instrument, Lot Number, Wavelength Points, Wavelength, Absorbance, Detector Temp, Humidity, Creation Time
                 columns = [
                     row_data['id'],
                     row_data['sample_name'],
@@ -515,12 +620,13 @@ class DataManagementUI(QWidget):
                     row_data['absorbance'],
                     row_data['detector_temp'],
                     row_data['humidity'],
-                    str(row_data['creation_time'])
+                    creation_time
                 ]
 
                 # Set UserRole for correct sorting (ID and Wavelength Points as int, others as float/string as needed)
                 numeric_columns = [0, 4]  # ID and Wavelength Points
-                float_columns = [5, 6, 7, 8]  # Wavelength, Absorbance, Detector Temp, Humidity
+                float_columns = [5, 7, 8]  # Wavelength, Detector Temp, Humidity
+                absorbance_column = 6  # Absorbance column - sort by first value
                 for col_idx, value in enumerate(columns):
                     item = SortableTableWidgetItem(str(value) if value is not None else "")
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -529,6 +635,13 @@ class DataManagementUI(QWidget):
                             item.setData(Qt.ItemDataRole.UserRole, int(value))
                         except Exception:
                             item.setData(Qt.ItemDataRole.UserRole, 0)
+                    elif col_idx == absorbance_column:
+                        # For absorbance, extract first value from comma-separated string
+                        try:
+                            first_value = float(str(value).split(',')[0].strip())
+                            item.setData(Qt.ItemDataRole.UserRole, first_value)
+                        except Exception:
+                            item.setData(Qt.ItemDataRole.UserRole, 0.0)
                     elif col_idx in float_columns:
                         try:
                             item.setData(Qt.ItemDataRole.UserRole, float(value))
@@ -546,6 +659,39 @@ class DataManagementUI(QWidget):
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Error during inquiry:\n{str(e)}")
+    
+    def _format_creation_time(self, time_value):
+        """Format creation time, handling invalid formats like b'   ' or empty values"""
+        if not time_value:
+            return ''
+        
+        # Convert to string if it's bytes
+        if isinstance(time_value, bytes):
+            try:
+                time_value = time_value.decode('utf-8').strip()
+            except Exception:
+                return ''
+        
+        # Convert to string
+        time_str = str(time_value).strip()
+        
+        # Check if it's empty or just whitespace
+        if not time_str or time_str in ['None', 'null', 'NULL']:
+            return ''
+        
+        # Check if it looks like a byte string representation (e.g., "b'   '")
+        if time_str.startswith("b'") or time_str.startswith('b"'):
+            try:
+                # Extract content between quotes
+                content = time_str[2:-1].strip()
+                if not content or content == '   ':
+                    return ''
+                return content
+            except Exception:
+                return ''
+        
+        # Return cleaned string
+        return time_str
 
     def on_tick_clicked(self):
         """Toggle checkbox state for all selected rows."""
@@ -590,10 +736,6 @@ class DataManagementUI(QWidget):
             QMessageBox.information(self, "Info", "Please tick rows to delete.")
             return
         rows_to_delete = ticked_rows
-        
-        if not rows_to_delete:
-            QMessageBox.information(self, "Info", "Please select rows to delete or tick rows")
-            return
         
         # Confirm deletion
         reply = QMessageBox.question(
@@ -680,7 +822,13 @@ class DataManagementUI(QWidget):
             if "folder" in data['mode'].lower():
                 self._process_folder_import(data)
             else:
-                self._process_file_import(data)
+                # Check if multiple files were selected
+                if len(data['paths']) > 1:
+                    # Process multiple files like folder import
+                    self._process_folder_import(data)
+                else:
+                    # Process single file
+                    self._process_file_import(data)
 
     def _process_folder_import(self, data):
         """Process folder import: read CSV files, display in table, and save to database."""
@@ -691,6 +839,10 @@ class DataManagementUI(QWidget):
             return
         
         print(f"Processing {len(paths)} file(s)")
+        
+        # Capture batch import timestamp - all files in this import will have the same timestamp
+        batch_import_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"Batch import started at: {batch_import_time}")
         
         # Clear existing table
         self.table.setRowCount(0)
@@ -716,7 +868,7 @@ class DataManagementUI(QWidget):
                         continue
                     
                     # Read CSV header rows (1-18) to extract metadata
-                    header_data = self._extract_csv_header_metadata(file_path)
+                    header_data = SpectralImportService.extract_csv_header_metadata(file_path)
                     
                     # Read CSV file - skip first 18 rows (header/metadata)
                     print(f"Reading CSV file (skipping first 18 rows)...")
@@ -764,13 +916,29 @@ class DataManagementUI(QWidget):
                     # Get detector temperature and humidity from header metadata
                     detector_temp = header_data.get('detector_temp', '0')
                     humidity = header_data.get('humidity', '0')
-                    creation_time = header_data.get('creation_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    # Note: Not using creation_time from header, using batch_import_time instead
                     
-                    # Insert into database
+                    # Insert into database with batch import time
                     print(f"Inserting into database...")
-                    sample_id = self._insert_sample_to_db(
-                        conn, sample_name, data, absorb_points, wavelength_str, absorbance_str, data_df,
-                        detector_temp, humidity, creation_time
+                    instrument = data.get('instrument', 'Unknown')
+                    
+                    # Extract lot number based on mode
+                    mode = data.get('mode', '').lower()
+                    if 'folder' in mode:
+                        folder_path = os.path.dirname(file_path)
+                        folder_name = os.path.basename(folder_path)
+                        separator = data.get('separator', '_')
+                        if separator in folder_name:
+                            lot_number = folder_name.split(separator)[0]
+                        else:
+                            lot_number = folder_name
+                    else:
+                        lot_number = data.get('lot', '')
+                    
+                    sample_id = SpectralImportService.insert_sample_to_db(
+                        conn, sample_name, instrument, lot_number, absorb_points, 
+                        wavelength_str, absorbance_str, data_df,
+                        detector_temp, humidity, batch_import_time
                     )
                     
                     if sample_id:
@@ -813,29 +981,25 @@ class DataManagementUI(QWidget):
                         lot = data.get('lot', '')  # Use lot from dialog
                     self.table.setItem(row, 4, QTableWidgetItem(lot))
                     
-                    # Column 5: Serial Number (sequential: 1, 2, 3...) - get row count AFTER insertion
-                    serial = str(self.table.rowCount())
-                    self.table.setItem(row, 5, QTableWidgetItem(serial))
+                    # Column 5: Wavelength Points (count of data rows)
+                    self.table.setItem(row, 5, QTableWidgetItem(str(absorb_points)))
                     
-                    # Column 6: Wavelength Points (count of data rows)
-                    self.table.setItem(row, 6, QTableWidgetItem(str(absorb_points)))
+                    # Column 6: Wavelength (full comma-separated)
+                    self.table.setItem(row, 6, QTableWidgetItem(wavelength_str))
                     
-                    # Column 7: Wavelength (full comma-separated)
-                    self.table.setItem(row, 7, QTableWidgetItem(wavelength_str))
+                    # Column 7: Absorbance (full comma-separated)
+                    self.table.setItem(row, 7, QTableWidgetItem(absorbance_str))
                     
-                    # Column 8: Absorbance (full comma-separated)
-                    self.table.setItem(row, 8, QTableWidgetItem(absorbance_str))
+                    # Column 8: Detector Temperature
+                    self.table.setItem(row, 8, QTableWidgetItem(detector_temp))
                     
-                    # Column 9: Detector Temperature
-                    self.table.setItem(row, 9, QTableWidgetItem(detector_temp))
+                    # Column 9: Humidity
+                    self.table.setItem(row, 9, QTableWidgetItem(humidity))
                     
-                    # Column 10: Humidity
-                    self.table.setItem(row, 10, QTableWidgetItem(humidity))
+                    # Column 10: Creation Time
+                    self.table.setItem(row, 10, QTableWidgetItem(batch_import_time))
                     
-                    # Column 11: Creation Time
-                    self.table.setItem(row, 11, QTableWidgetItem(creation_time))
-                    
-                    print(f"Table row {row}: {filename} | {sample_name} | {instrument} | {lot} | {creation_time}")
+                    print(f"Table row {row}: {filename} | {sample_name} | {instrument} | {lot} | {batch_import_time}")
                     
                     # Plot first file's data
                     if row == 0 and data_df is not None:
@@ -848,6 +1012,8 @@ class DataManagementUI(QWidget):
                     import traceback
                     traceback.print_exc()
             
+            # Ensure all commits are flushed before closing
+            conn.commit()
             conn.close()
             
             print(f"Total inserted: {inserted_count} files")
@@ -877,6 +1043,10 @@ class DataManagementUI(QWidget):
         file_path = paths[0]
         self.table.setRowCount(0)
         
+        # Capture import timestamp for single file
+        batch_import_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"File import started at: {batch_import_time}")
+        
         try:
             # Connect to database
             conn = self._get_db_connection()
@@ -887,7 +1057,7 @@ class DataManagementUI(QWidget):
             print(f"Processing single file: {file_path}")
             
             # Read CSV header rows (1-18) to extract metadata
-            header_data = self._extract_csv_header_metadata(file_path)
+            header_data = SpectralImportService.extract_csv_header_metadata(file_path)
             
             # Read CSV file - skip first 18 rows (header/metadata)
             try:
@@ -915,6 +1085,11 @@ class DataManagementUI(QWidget):
             else:
                 sample_name = data.get('sample', filename.replace('.csv', ''))
             
+            # Truncate sample_name to fit VARCHAR(50) limit
+            if len(sample_name) > 50:
+                sample_name = sample_name[:40] + sample_name[-10:]
+                print(f"Truncated sample_name to 50 chars: {sample_name}")
+            
             # Extract wavelength and absorbance (FULL, not just preview)
             wavelength_str = ""
             absorbance_str = ""
@@ -928,14 +1103,20 @@ class DataManagementUI(QWidget):
             # Get detector temperature and humidity from header metadata
             detector_temp = header_data.get('detector_temp', '0')
             humidity = header_data.get('humidity', '0')
-            creation_time = header_data.get('creation_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            # Note: Using batch_import_time instead of header creation_time
             
-            # Insert into database
-            sample_id = self._insert_sample_to_db(
-                conn, sample_name, data, absorb_points, wavelength_str, absorbance_str, data_df,
-                detector_temp, humidity, creation_time
+            # Insert into database with batch import time
+            instrument = data.get('instrument', 'Unknown')
+            lot_number = data.get('lot', '')
+            
+            sample_id = SpectralImportService.insert_sample_to_db(
+                conn, sample_name, instrument, lot_number, absorb_points, 
+                wavelength_str, absorbance_str, data_df,
+                detector_temp, humidity, batch_import_time
             )
             
+            # Ensure commit is flushed before closing
+            conn.commit()
             conn.close()
             
             # Add single row to table
@@ -959,27 +1140,23 @@ class DataManagementUI(QWidget):
             lot = data.get('lot', '')
             self.table.setItem(0, 4, QTableWidgetItem(lot))
             
-            # Column 5: Serial Number (sequential: 1, 2, 3...)
-            serial = str(self.table.rowCount())  # Get row count after insertion (which is 1 for first row)
-            self.table.setItem(0, 5, QTableWidgetItem(serial))
+            # Column 5: Wavelength Points
+            self.table.setItem(0, 5, QTableWidgetItem(str(absorb_points)))
             
-            # Column 6: Wavelength Points
-            self.table.setItem(0, 6, QTableWidgetItem(str(absorb_points)))
+            # Column 6: Wavelength
+            self.table.setItem(0, 6, QTableWidgetItem(wavelength_str))
             
-            # Column 7: Wavelength
-            self.table.setItem(0, 7, QTableWidgetItem(wavelength_str))
+            # Column 7: Absorbance
+            self.table.setItem(0, 7, QTableWidgetItem(absorbance_str))
             
-            # Column 8: Absorbance
-            self.table.setItem(0, 8, QTableWidgetItem(absorbance_str))
+            # Column 8: Detector Temperature
+            self.table.setItem(0, 8, QTableWidgetItem(detector_temp))
             
-            # Column 9: Detector Temperature
-            self.table.setItem(0, 9, QTableWidgetItem(detector_temp))
+            # Column 9: Humidity
+            self.table.setItem(0, 9, QTableWidgetItem(humidity))
             
-            # Column 10: Humidity
-            self.table.setItem(0, 10, QTableWidgetItem(humidity))
-            
-            # Column 11: Creation Time
-            self.table.setItem(0, 11, QTableWidgetItem(creation_time))
+            # Column 10: Creation Time
+            self.table.setItem(0, 10, QTableWidgetItem(batch_import_time))
             
             self._plot_spectrogram(df)
             
@@ -1009,60 +1186,7 @@ class DataManagementUI(QWidget):
             absorbance = df['Absorbance'].values
             self.plot.plot_spectra(wavelength, absorbance, title="NIR Spectra")
 
-    def _extract_csv_header_metadata(self, file_path):
-        """Extract metadata from CSV header rows (specific row/column positions)."""
-        header_data = {
-            'detector_temp': '0.0',
-            'humidity': '0.0',
-            'serial_number': '',
-            'creation_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        try:
-            # Read CSV file
-            df = pd.read_csv(file_path, header=None, skiprows=0, on_bad_lines='skip', encoding='utf-8')
-            
-            # Extract from specific rows (0-indexed, so row 4 in Excel = index 3)
-            # Row 4: Detector Temp hundredths: | B column
-            if len(df) > 3:  # Row 4
-                try:
-                    detector_val = df.iloc[3, 1]  # Column B (index 1)
-                    if pd.notna(detector_val):
-                        detector_val = float(detector_val) / 100.0  # Divide by 100 (hundredths)
-                        header_data['detector_temp'] = f"{detector_val:.2f}"
-                except (ValueError, IndexError):
-                    pass
-            
-            # Row 5: Humidity hundredths: | B column
-            if len(df) > 4:  # Row 5
-                try:
-                    humidity_val = df.iloc[4, 1]  # Column B (index 1)
-                    if pd.notna(humidity_val):
-                        humidity_val = float(humidity_val) / 100.0  # Divide by 100 (hundredths)
-                        header_data['humidity'] = f"{humidity_val:.2f}"
-                except (ValueError, IndexError):
-                    pass
-            
-            # Row 8: Serial Number: | B column
-            if len(df) > 7:  # Row 8
-                try:
-                    serial_val = df.iloc[7, 1]  # Column B (index 1)
-                    if pd.notna(serial_val):
-                        header_data['serial_number'] = str(serial_val).strip()
-                except (ValueError, IndexError):
-                    pass
-            
-            # Row 15: Measurement points: | B column (for wavelength count)
-            # Note: Creation time will use current timestamp
-            
-            print(f"Extracted header metadata: {header_data}")
-            return header_data
-            
-        except Exception as e:
-            print(f"Error extracting CSV header metadata: {e}")
-            import traceback
-            traceback.print_exc()
-            return header_data
+    # Removed: _extract_csv_header_metadata - now using SpectralImportService.extract_csv_header_metadata()
 
     # ============= DATABASE METHODS =============
     def _get_db_connection(self):
@@ -1075,152 +1199,21 @@ class DataManagementUI(QWidget):
                 database=self.db_config['database'],
                 port=self.db_config['port'],
                 charset=self.db_config['charset'],
-                cursorclass=pymysql.cursors.DictCursor
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False
             )
+            # Set transaction isolation to READ COMMITTED to see latest committed data
+            cursor = conn.cursor()
+            cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            cursor.close()
             return conn
         except Exception as e:
             print(f"Database connection error: {e}")
             return None
 
-    def _insert_sample_to_db(self, conn, sample_name, data, absorb_points, wavelength_str, absorbance_str, data_df,
-                             detector_temp='0', humidity='0', creation_time=None):
-        """Insert sample data into database tables with all metadata from dialog."""
-        cursor = None
-        try:
-            cursor = conn.cursor()
-            
-            if creation_time is None:
-                creation_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Generate unique sample_id
-            sample_id = self._generate_sample_id(cursor)
-            print(f"Generated sample_id: {sample_id}")
-            
-            # Extract wavelength range from data
-            model_wavemin = "900"
-            model_wavemax = "1700"
-            
-            if 'Wavelength' in data_df.columns:
-                wavelengths = data_df['Wavelength'].values
-                if len(wavelengths) > 0:
-                    model_wavemin = str(int(wavelengths[0]))
-                    model_wavemax = str(int(wavelengths[-1]))
-            
-            print(f"Wave range: {model_wavemin} - {model_wavemax}")
-            
-            # Get metadata from dialog inputs
-            instrument = data.get('instrument', 'Unknown')
-            lot_number = data.get('lot', '')
-            file_format = data.get('format', 'csv')
-            creation_date = datetime.now()
-            
-            # ===== INSERT INTO sample TABLE =====
-            insert_sample = """
-            INSERT INTO sample (
-                sample_id, sample_name, model_num, model_wavemin, model_wavemax,
-                model_wavepath, model_method, sample_status,
-                create_person, create_time, sample_state
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
-            """
-            
-            print(f"Inserting into sample table with:")
-            print(f"  - sample_id: {sample_id}")
-            print(f"  - sample_name: {sample_name}")
-            print(f"  - instrument: {instrument}")
-            print(f"  - lot_number: {lot_number}")
-            print(f"  - file_format: {file_format}")
-            
-            cursor.execute(insert_sample, (
-                sample_id, 
-                sample_name, 
-                0, 
-                model_wavemin, 
-                model_wavemax,
-                '1', 
-                '0', 
-                '0',
-                f'ui_import_{instrument}_{lot_number}',
-                '1'
-            ))
-            print(f"Successfully inserted into sample table")
-            
-            # ===== INSERT INTO model_data TABLE =====
-            if 'Wavelength' in data_df.columns and 'Absorbance' in data_df.columns:
-                wave = ",".join(data_df['Wavelength'].astype(str).tolist())
-                absorb = ",".join(data_df['Absorbance'].astype(str).tolist())
-                
-                insert_model = """
-                INSERT INTO model_data (
-                    sample_id, model_sno, model_order, device_id,
-                    model_length, wave, absorb, system_temp, create_time
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                """
-                
-                print(f"Inserting into model_data table with device_id: {instrument}")
-                cursor.execute(insert_model, (
-                    sample_id,
-                    lot_number,  # Store lot number here
-                    "1",
-                    instrument,
-                    str(absorb_points),
-                    wave,
-                    absorb,
-                    "0"
-                ))
-                print(f"Successfully inserted into model_data table")
-            else:
-                print(f"Warning: Wavelength/Absorbance not found in data_df")
-                # Still insert even without spectral data
-                insert_model = """
-                INSERT INTO model_data (
-                    sample_id, model_sno, model_order, device_id,
-                    model_length, system_temp, create_time
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, NOW())
-                """
-                cursor.execute(insert_model, (
-                    sample_id,
-                    lot_number,
-                    "1",
-                    instrument,
-                    str(absorb_points),
-                    "0"
-                ))
-            
-            # Auto-project creation disabled - only create samples during import
-            # Projects should be created manually through Project Management module
-            
-            # Commit all changes
-            conn.commit()
-            print(f"✓ Successfully inserted sample: {sample_id} - {sample_name}")
-            print(f"  Instrument: {instrument}, Lot: {lot_number}, Format: {file_format}")
-            return sample_id
-            
-        except Exception as e:
-            print(f"✗ Error inserting sample: {e}")
-            import traceback
-            traceback.print_exc()
-            try:
-                conn.rollback()
-            except:
-                pass
-            return None
-        finally:
-            if cursor:
-                cursor.close()
+    # Removed: _insert_sample_to_db - now using SpectralImportService.insert_sample_to_db()
 
-    def _generate_sample_id(self, cursor):
-        """Generate unique sample_id."""
-        try:
-            query = "SELECT MAX(CAST(sample_id AS UNSIGNED)) as max_id FROM sample"
-            cursor.execute(query)
-            result = cursor.fetchone()
-            max_id = result['max_id'] if result['max_id'] else 0
-            return str(max_id + 1)
-        except:
-            return str(int(datetime.now().timestamp()))
+    # Removed: _generate_sample_id - now using SpectralImportService.generate_sample_id()
 
     def _generate_project_sample_id(self, cursor):
         """Generate unique project_sample id."""

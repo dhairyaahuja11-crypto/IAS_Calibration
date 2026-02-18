@@ -1,7 +1,8 @@
 """
 Project Service - Business logic and database operations for Project Management
 """
-from database.db import get_connection
+import pymysql
+from config import DB_CONFIG
 from datetime import datetime
 import random
 
@@ -9,8 +10,31 @@ import random
 class ProjectService:
     
     @staticmethod
+    def _get_db_connection():
+        """Get database connection with READ COMMITTED isolation level for data visibility."""
+        try:
+            conn = pymysql.connect(
+                host=DB_CONFIG['host'],
+                user=DB_CONFIG['user'],
+                password=DB_CONFIG['password'],
+                database=DB_CONFIG['database'],
+                port=DB_CONFIG['port'],
+                charset=DB_CONFIG['charset'],
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False
+            )
+            # Set transaction isolation to READ COMMITTED to see latest committed data
+            cursor = conn.cursor()
+            cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            cursor.close()
+            return conn
+        except Exception as e:
+            print(f"Database connection error: {e}")
+            return None
+    
+    @staticmethod
     def get_projects_by_filters(date_from, date_to, status=None, measurement_type=None, 
-                                 project_name=None, sample_type=None):
+                                 project_name=None, sample_type=None, user_id=None):
         """
         Fetch projects from database based on filters
         
@@ -21,12 +45,17 @@ class ProjectService:
             measurement_type (str, optional): Measurement type filter (analysis_type)
             project_name (str, optional): Project name filter (partial match)
             sample_type (str, optional): Sample type filter
+            user_id (str, optional): User ID filter (partial match)
             
         Returns:
             list: List of project dictionaries with all fields
         """
         try:
-            conn = get_connection()
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                print("Failed to connect to database")
+                return []
+            
             cursor = conn.cursor()
             
             # Build dynamic query with filters
@@ -67,6 +96,10 @@ class ProjectService:
                 query += " AND sample_type = %s"
                 params.append(sample_type)
             
+            if user_id and user_id.strip():
+                query += " AND create_person LIKE %s"
+                params.append(f"%{user_id.strip()}%")
+            
             query += " ORDER BY create_time DESC"
             
             cursor.execute(query, tuple(params))
@@ -98,7 +131,10 @@ class ProjectService:
             if not project_id:
                 return False, "Project ID is required"
             
-            conn = get_connection()
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                return False, "Failed to connect to database"
+            
             cursor = conn.cursor()
             
             # Start transaction
@@ -147,7 +183,10 @@ class ProjectService:
             dict or None: Project data dictionary or None if not found
         """
         try:
-            conn = get_connection()
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                return None
+            
             cursor = conn.cursor()
             
             query = """
@@ -193,7 +232,10 @@ class ProjectService:
             list: List of sample dictionaries
         """
         try:
-            conn = get_connection()
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                return []
+            
             cursor = conn.cursor()
             
             # Check if project_sample linking table exists
@@ -261,7 +303,10 @@ class ProjectService:
             if not project_id:
                 return False, "Project ID is required"
             
-            conn = get_connection()
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                return False, "Failed to connect to database"
+            
             cursor = conn.cursor()
             
             # Prepare data
@@ -352,7 +397,10 @@ class ProjectService:
             if not project_data.get('measurement_index'):
                 return False, "Please select at least one measurement index", None
             
-            conn = get_connection()
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                return False, "Failed to connect to database", None
+            
             cursor = conn.cursor()
             
             # Start transaction to ensure atomic auto-increment

@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
+from ui.custom_widgets import DateEditWithToday
 
 
 class SampleSelectionDialog(QDialog):
@@ -45,15 +46,13 @@ class SampleSelectionDialog(QDialog):
         filter_group.addWidget(QLabel("creation time:"), 0, 6)
         
         # Date range
-        self.date_from = QDateEdit(QDate.currentDate().addMonths(-3))
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday(QDate.currentDate().addMonths(-3))
         self.date_from.setDisplayFormat("d MMMM, yyyy")
         filter_group.addWidget(self.date_from, 0, 7)
 
         filter_group.addWidget(QLabel("-"), 0, 8)
 
-        self.date_to = QDateEdit(QDate.currentDate())
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday(QDate.currentDate())
         self.date_to.setDisplayFormat("d MMMM, yyyy")
         filter_group.addWidget(self.date_to, 0, 9)
 
@@ -150,60 +149,78 @@ class SampleSelectionDialog(QDialog):
             
             print(f"Loading samples from {date_from} to {date_to}")
             
-            # Fetch samples from database
-            samples = SampleService.get_samples_by_date(date_from, date_to)
+            # Fetch samples from database with filters
+            samples = SampleService.get_samples_by_date(
+                date_from, 
+                date_to,
+                sample_name=sample_name if sample_name else None,
+                user_id=user_id if user_id else None
+            )
             
             print(f"Fetched {len(samples)} samples from database")
             
-            # Apply additional filters
-            if sample_name:
-                samples = [s for s in samples if sample_name.lower() in s.get('sample_name', '').lower()]
-                print(f"After sample_name filter: {len(samples)} samples")
+            # Apply additional filters (sample_status is not in database query)
+            # Note: sample_name and user_id are now filtered at database level
             
             if sample_status != "all":
                 samples = [s for s in samples if s.get('sample_status') == sample_status]
                 print(f"After status filter: {len(samples)} samples")
             
-            if user_id:
-                samples = [s for s in samples if user_id.lower() in str(s.get('user_id', '')).lower()]
-                print(f"After user_id filter: {len(samples)} samples")
-            
             # Store original samples for reference
             self._original_samples = samples
             
-            # Group samples by sample_name (merge replicates)
+            # Group samples by (sample_name, creation_time) combination - same as sample management
             grouped_samples = {}
             for sample in samples:
                 sample_name = sample.get('sample_name', '')
-                if sample_name not in grouped_samples:
+                creation_time = sample.get('creation_time', '')
+                
+                # Truncate creation_time to minute precision (ignore seconds)
+                creation_time_minute = creation_time[:16] if len(creation_time) >= 16 else creation_time
+                
+                # Create unique key using sample_name and time up to minute
+                group_key = (sample_name, creation_time_minute)
+                
+                if group_key not in grouped_samples:
                     # First occurrence - use this as representative
-                    grouped_samples[sample_name] = sample.copy()
-                    grouped_samples[sample_name]['sample_ids'] = [sample.get('id', '')]
-                    grouped_samples[sample_name]['replicate_count'] = 1
+                    grouped_samples[group_key] = sample.copy()
+                    grouped_samples[group_key]['model_ids'] = [sample.get('id', '')]  # For display/operations
+                    grouped_samples[group_key]['sample_ids'] = [sample.get('sample_id', '')]  # For template export
+                    grouped_samples[group_key]['replicate_count'] = 1
                 else:
-                    # Additional replicate - update count and IDs
-                    grouped_samples[sample_name]['sample_ids'].append(sample.get('id', ''))
-                    grouped_samples[sample_name]['replicate_count'] += 1
+                    # Additional replicate at same time - update count and IDs
+                    grouped_samples[group_key]['model_ids'].append(sample.get('id', ''))
+                    grouped_samples[group_key]['sample_ids'].append(sample.get('sample_id', ''))
+                    grouped_samples[group_key]['replicate_count'] += 1
                     
                     # Always update substance_content if current sample has it (prefer non-empty)
                     current_substance = sample.get('substance_content', '').strip()
-                    existing_substance = grouped_samples[sample_name].get('substance_content', '').strip()
+                    existing_substance = grouped_samples[group_key].get('substance_content', '').strip()
                     
                     if current_substance and not existing_substance:
                         # Current has content but existing doesn't - use current
-                        grouped_samples[sample_name]['substance_content'] = current_substance
+                        grouped_samples[group_key]['substance_content'] = current_substance
                     elif current_substance and existing_substance and len(current_substance) > len(existing_substance):
                         # Both have content - use the longer/more complete one
-                        grouped_samples[sample_name]['substance_content'] = current_substance
+                        grouped_samples[group_key]['substance_content'] = current_substance
                     
-                    # Update scanned_number to sum all scans
-                    grouped_samples[sample_name]['scanned_number'] = str(
-                        int(grouped_samples[sample_name].get('scanned_number', 0)) + 
+                    # Update scanned_number to sum all scans at this time
+                    grouped_samples[group_key]['scanned_number'] = str(
+                        int(grouped_samples[group_key].get('scanned_number', 0)) + 
                         int(sample.get('scanned_number', 0))
                     )
             
-            # Convert back to list
-            grouped_list = list(grouped_samples.values())
+            # Convert back to list and use first model_id as group ID
+            grouped_list = []
+            for group_key, sample_data in grouped_samples.items():
+                # Use first model_id from the group as the representative ID
+                model_ids = sample_data.get('model_ids', [])
+                if model_ids:
+                    sample_data['id'] = str(model_ids[0])  # Use real database model_id
+                grouped_list.append(sample_data)
+            
+            # Sort by creation_time descending (newest first)
+            grouped_list.sort(key=lambda x: x.get('creation_time', ''), reverse=True)
             
             # Populate table with grouped samples
             self.populate_table(grouped_list)

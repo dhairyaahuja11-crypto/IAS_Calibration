@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QDate
 from PyQt6.QtWidgets import QMessageBox
+from ui.custom_widgets import DateEditWithToday
 #from database.database1 import fetch_instruments
 
 
@@ -158,13 +159,11 @@ class InstrumentManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 0, 6)
 
-        self.date_from = QDateEdit()
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday()
         self.date_from.setDate(QDate.currentDate())
         self.date_from.setDisplayFormat("dd MMMM yyyy")
 
-        self.date_to = QDateEdit()
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday()
         self.date_to.setDate(QDate.currentDate())
         self.date_to.setDisplayFormat("dd MMMM yyyy")
 
@@ -184,6 +183,7 @@ class InstrumentManagementUI(QWidget):
         self.add_btn = QPushButton("Add")
         self.modify_btn = QPushButton("Modify")
         self.delete_btn = QPushButton("Delete")
+        self.clear_selection_btn = QPushButton("Clear Selection")
 
         self.add_btn.clicked.connect(self.on_add_clicked)
 
@@ -192,6 +192,7 @@ class InstrumentManagementUI(QWidget):
         btn_layout.addWidget(self.add_btn)
         btn_layout.addWidget(self.modify_btn)
         btn_layout.addWidget(self.delete_btn)
+        btn_layout.addWidget(self.clear_selection_btn)
         btn_layout.addStretch()
 
         main_layout.addLayout(btn_layout)
@@ -204,10 +205,38 @@ class InstrumentManagementUI(QWidget):
             "Serial Number", "User ID",
             "Creation Time", "Status", "Remark"
         ])
+        
+        # Install event filter to detect clicks on empty table space
+        self.table.viewport().installEventFilter(self)
 
         main_layout.addWidget(self.table)
     def _connect_signals(self):
         self.btn_delete.clicked.connect(self.open_delete_dialog)
+        self.clear_selection_btn.clicked.connect(self.on_clear_selection_clicked)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Filter events to detect clicks on empty table space"""
+        from PyQt6.QtCore import QEvent
+        
+        if obj == self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            index = self.table.indexAt(event.pos())
+            if not index.isValid():
+                self.table.clearSelection()
+                return True
+        
+        return super().eventFilter(obj, event)
+    
+    def on_clear_selection_clicked(self):
+        """Clear all row selections"""
+        self.table.clearSelection()
 
     def on_inquiry_clicked(self):
     # 1️⃣ Collect filter values from UI

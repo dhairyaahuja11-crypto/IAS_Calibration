@@ -4,7 +4,8 @@ from PyQt6.QtWidgets import (
     QGridLayout, QDateEdit, QMessageBox, QTableWidget,
     QTableWidgetItem, QHeaderView
 )
-from PyQt6.QtCore import QDate
+from PyQt6.QtCore import QDate, pyqtSignal
+from ui.custom_widgets import DateEditWithToday
 
 # Add dialog
 from ui.dialogs.project_add_dialog import ProjectAddDialog
@@ -17,8 +18,12 @@ from services.project_service import ProjectService
 
 
 class ProjectManagementUI(QWidget):
+    # Signal emitted when a project is added, modified, or deleted
+    project_changed = pyqtSignal()
+    
     def __init__(self):
         super().__init__()
+        self._inquiry_run = False  # Track if inquiry has been run at least once
         self._build_ui()
         self._connect_signals()
 
@@ -58,12 +63,10 @@ class ProjectManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 1, 0)
 
-        self.date_from = QDateEdit(QDate.currentDate().addMonths(-1))
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday(QDate.currentDate().addMonths(-1))
         self.date_from.setDisplayFormat("dd MMMM yyyy")
 
-        self.date_to = QDateEdit(QDate.currentDate())
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday(QDate.currentDate())
         self.date_to.setDisplayFormat("dd MMMM yyyy")
 
         filter_layout.addWidget(self.date_from, 1, 1)
@@ -79,11 +82,13 @@ class ProjectManagementUI(QWidget):
         self.btn_add = QPushButton("Add")
         self.btn_modify = QPushButton("Modify")
         self.btn_delete = QPushButton("Delete")
+        self.btn_clear_selection = QPushButton("Clear Selection")
 
         btn_layout.addWidget(self.btn_inquiry)
         btn_layout.addWidget(self.btn_add)
         btn_layout.addWidget(self.btn_modify)
         btn_layout.addWidget(self.btn_delete)
+        btn_layout.addWidget(self.btn_clear_selection)
         btn_layout.addStretch()
 
         main_layout.addLayout(btn_layout)
@@ -109,10 +114,13 @@ class ProjectManagementUI(QWidget):
         # Enable row selection
         self.project_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         
+        # Install event filter to detect clicks on empty table space
+        self.project_table.viewport().installEventFilter(self)
+        
         main_layout.addWidget(self.project_table)
         
-        # Load initial data
-        self.load_projects()
+        # Don't load data on init - only load when user clicks Inquiry
+        # self.load_projects()  # Removed to avoid unnecessary DB query on startup
 
     # ---------------- SIGNALS ----------------
     def _connect_signals(self):
@@ -120,10 +128,39 @@ class ProjectManagementUI(QWidget):
         self.btn_add.clicked.connect(self.open_add_dialog)
         self.btn_modify.clicked.connect(self.open_modify_dialog)
         self.btn_delete.clicked.connect(self.open_delete_dialog)
+        self.btn_clear_selection.clicked.connect(self.on_clear_selection_clicked)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.project_table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Filter events to detect clicks on empty table space"""
+        from PyQt6.QtCore import QEvent
+        
+        if obj == self.project_table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            index = self.project_table.indexAt(event.pos())
+            if not index.isValid():
+                self.project_table.clearSelection()
+                return True
+        
+        return super().eventFilter(obj, event)
+    
+    def on_clear_selection_clicked(self):
+        """Clear all row selections"""
+        self.project_table.clearSelection()
 
     # ---------------- DATA LOADING ----------------
-    def load_projects(self):
-        """Load projects based on filter criteria"""
+    def load_projects(self, silent=False):
+        """Load projects based on filter criteria
+        
+        Args:
+            silent (bool): If True, suppress success message after loading
+        """
         try:
             # Get filter values
             date_from = self.date_from.date().toString("yyyy-MM-dd")
@@ -144,13 +181,21 @@ class ProjectManagementUI(QWidget):
                 status=status if status.lower() != 'all' else None,
                 measurement_type=measurement_type if measurement_type.lower() != 'all' else None,
                 project_name=project_name if project_name else None,
-                sample_type=sample_type if sample_type.lower() != 'all' else None
+                sample_type=sample_type if sample_type.lower() != 'all' else None,
+                user_id=user_id if user_id else None
             )
             
             print(f"Found {len(projects)} projects")
             
             # Populate table
             self.populate_table(projects)
+            
+            # Mark that inquiry has been run at least once
+            self._inquiry_run = True
+            
+            # Show success message only if not silent mode
+            if not silent and projects:
+                print(f"Loaded {len(projects)} projects successfully")
             
         except Exception as e:
             print(f"Error loading projects: {e}")
@@ -198,6 +243,8 @@ class ProjectManagementUI(QWidget):
     def open_add_dialog(self):
         dialog = ProjectAddDialog(self)
         if dialog.exec():
+            # Notify other tabs that projects have changed
+            self.project_changed.emit()
             print("Project added")
             # Reload projects after adding
             self.load_projects()
@@ -232,6 +279,8 @@ class ProjectManagementUI(QWidget):
         if self.modify_dialog.exec():
             # Reload projects after modification
             self.load_projects()
+            # Notify other tabs that projects have changed
+            self.project_changed.emit()
 
     def open_delete_dialog(self):
         """Delete selected project(s)"""
@@ -298,5 +347,7 @@ class ProjectManagementUI(QWidget):
             
             # Reload projects after deletion
             self.load_projects()
+            # Notify other tabs that projects have changed
+            self.project_changed.emit()
         else:
             print("Delete cancelled")

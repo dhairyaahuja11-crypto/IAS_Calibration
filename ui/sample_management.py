@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QDateEdit, QTableWidget, QTableWidgetItem,
     QCheckBox, QHeaderView, QMessageBox
 )
+from ui.custom_widgets import DateEditWithToday
 
 # Sortable table item for proper numerical sorting
 class SortableTableWidgetItem(QTableWidgetItem):
@@ -31,6 +32,9 @@ from services.sample_service import SampleService
 # 🔴 Dialog imports
 from ui.dialogs.sample_add_dialog import SampleAddDialog
 from ui.dialogs.sample_modify_dialog import SampleModifyDialog
+
+# 👉 IMPORT SHARED SERVICE
+from services.spectral_import_service import SpectralImportService
 
 
 class CheckBoxHeader(QHeaderView):
@@ -86,6 +90,7 @@ class CheckBoxHeader(QHeaderView):
 class SampleManagementUI(QWidget):
     def __init__(self):
         super().__init__()
+        self._inquiry_run = False  # Track if inquiry has been run at least once
         self._build_ui()
         self._connect_signals()
 
@@ -112,13 +117,11 @@ class SampleManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 0, 6)
 
-        self.date_from = QDateEdit()
-        self.date_from.setCalendarPopup(True)
+        self.date_from = DateEditWithToday()
         self.date_from.setDate(QDate.currentDate().addMonths(-1))
         self.date_from.setDisplayFormat("dd MMMM yyyy")
 
-        self.date_to = QDateEdit()
-        self.date_to.setCalendarPopup(True)
+        self.date_to = DateEditWithToday()
         self.date_to.setDate(QDate.currentDate())
         self.date_to.setDisplayFormat("dd MMMM yyyy")
 
@@ -135,6 +138,7 @@ class SampleManagementUI(QWidget):
         self.btn_modify = QPushButton("Modify")
         self.btn_delete = QPushButton("Delete")
         self.btn_tick = QPushButton("Tick")
+        self.btn_clear_selection = QPushButton("Clear Selection")
         self.btn_batch_import = QPushButton("Batch import substance content")
 
         btn_layout.addWidget(self.btn_inquiry)
@@ -142,6 +146,7 @@ class SampleManagementUI(QWidget):
         btn_layout.addWidget(self.btn_modify)
         btn_layout.addWidget(self.btn_delete)
         btn_layout.addWidget(self.btn_tick)
+        btn_layout.addWidget(self.btn_clear_selection)
         btn_layout.addWidget(self.btn_batch_import)
 
         self.template_download = QLabel('<a href="#">template download</a>')
@@ -180,19 +185,51 @@ class SampleManagementUI(QWidget):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(0, 30)  # Checkbox column
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Sample name
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Sample name stretches
+        header.setSectionResizeMode(12, QHeaderView.ResizeMode.ResizeToContents)  # Creation Time auto-resizes
+        
+        # Enable horizontal scrolling
+        self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        self.table.setVerticalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        
+        # Install event filter to detect clicks on empty table space
+        self.table.viewport().installEventFilter(self)
         
         main_layout.addWidget(self.table)
 
     # ---------------- SIGNALS ----------------
     def _connect_signals(self):
         self.btn_inquiry.clicked.connect(self.on_inquiry_clicked)
-        self.btn_add.clicked.connect(self.open_add_dialog)
+        self.btn_add.clicked.connect(self.open_data_import_dialog)  # Changed to import dialog
         self.btn_modify.clicked.connect(self.open_modify_dialog)
         self.btn_delete.clicked.connect(self.open_delete_dialog)
         self.btn_tick.clicked.connect(self.on_tick_clicked)
+        self.btn_clear_selection.clicked.connect(self.on_clear_selection_clicked)
         self.btn_batch_import.clicked.connect(self.on_batch_import_clicked)
         self.template_download.linkActivated.connect(self.on_template_download_clicked)
+    
+    def keyPressEvent(self, event):
+        """Handle key press events - Escape to clear selection"""
+        from PyQt6.QtCore import Qt
+        if event.key() == Qt.Key.Key_Escape:
+            self.table.clearSelection()
+        else:
+            super().keyPressEvent(event)
+    
+    def eventFilter(self, obj, event):
+        """Filter events to detect clicks on empty table space"""
+        from PyQt6.QtCore import QEvent
+        
+        if obj == self.table.viewport() and event.type() == QEvent.Type.MouseButtonPress:
+            # Get the row at the click position
+            index = self.table.indexAt(event.pos())
+            
+            # If clicked on empty space (no valid row), clear selection
+            if not index.isValid():
+                self.table.clearSelection()
+                return True
+        
+        return super().eventFilter(obj, event)
     
     # ---------------- CHECKBOX HANDLERS ----------------
     def on_header_checkbox_changed(self, checked):
@@ -243,22 +280,24 @@ class SampleManagementUI(QWidget):
                         sample_name_item = self.table.item(row_idx, 2)
                         
                         if display_id_item and sample_name_item:
-                            display_id = display_id_item.text()
+                            model_id = display_id_item.text()  # Now contains real model_id
                             sample_name = sample_name_item.text()
                             
-                            # Get first actual sample ID to fetch substance content
-                            actual_sample_id = None
-                            if hasattr(self, '_original_samples'):
-                                for sample in self._original_samples:
-                                    if sample.get('sample_name') == sample_name:
-                                        actual_sample_id = sample.get('id')
+                            # Get sample IDs from merged samples data (for template export)
+                            sample_ids = []
+                            if hasattr(self, '_merged_samples'):
+                                for merged_sample in self._merged_samples:
+                                    if merged_sample.get('id') == model_id:
+                                        # Get all sample_ids for this group (not model_ids)
+                                        sample_ids = merged_sample.get('sample_ids', [])
                                         break
                             
-                            if actual_sample_id:
+                            if sample_ids:
+                                # Use only the first sample_id (representative) for merged template
                                 template_data.append({
-                                    'display_id': display_id,
+                                    'model_id': model_id,  # Real database model_id
                                     'sample_name': sample_name,
-                                    'actual_sample_id': actual_sample_id
+                                    'actual_sample_id': sample_ids[0]  # Only first ID
                                 })
         
         if not template_data:
@@ -281,8 +320,8 @@ class SampleManagementUI(QWidget):
             actual_ids = [item['actual_sample_id'] for item in template_data]
             sample_data = SampleService.get_samples_for_template(actual_ids)
             
-            # Replace actual sample_id with display_id for VLOOKUP compatibility
-            id_mapping = {item['actual_sample_id']: item['display_id'] for item in template_data}
+            # Replace actual sample_id with model_id for VLOOKUP compatibility
+            id_mapping = {item['actual_sample_id']: item['model_id'] for item in template_data}
             for sample in sample_data:
                 actual_id = sample['sample_id']
                 if actual_id in id_mapping:
@@ -304,13 +343,6 @@ class SampleManagementUI(QWidget):
         """Import substance content values from CSV file"""
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         
-        # Get selected (checked) samples from the table using existing method
-        selected_samples = self._get_ticked_sample_ids()
-        
-        if not selected_samples:
-            QMessageBox.warning(self, "Warning", "Please select samples by checking them first!")
-            return
-        
         # Show file open dialog
         file_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -322,16 +354,17 @@ class SampleManagementUI(QWidget):
         if not file_path:
             return
         
-        # Import via service layer - pass selected samples
+        # Import via service layer - no sample filtering, will update all matching samples
         try:
             success, message, updated_count = SampleService.batch_import_substance_content(
                 file_path, 
-                selected_sample_ids=selected_samples
+                selected_sample_ids=None
             )
             
-            # Always refresh table to show any updates
-            self.on_inquiry_clicked()
+            # Refresh table silently (don't show "Loaded X samples" message)
+            self.on_inquiry_clicked(silent=True)
             
+            # Only show the batch import result message
             if success and updated_count > 0:
                 QMessageBox.information(self, "Import Complete", message)
             elif success and updated_count == 0:
@@ -343,65 +376,99 @@ class SampleManagementUI(QWidget):
             QMessageBox.critical(self, "Import Error", f"Failed to import data:\n{str(e)}")
     
     # ---------------- INQUIRY ----------------
-    def on_inquiry_clicked(self):
-        """Fetch and display samples based on date range, grouped by sample_name"""
+    def on_inquiry_clicked(self, silent=False):
+        """Fetch and display samples, grouped by sample_name + creation_time combination
+        
+        Args:
+            silent (bool): If True, suppress the success message after loading samples
+        """
         try:
             # Get date range from UI
             date_from = self.date_from.date().toString("yyyy-MM-dd")
             date_to = self.date_to.date().toString("yyyy-MM-dd")
             
-            # Fetch data from service layer
-            samples = SampleService.get_samples_by_date(date_from, date_to)
+            # Get filter values
+            sample_name_filter = self.sample_name.text().strip()
+            user_id_filter = self.user_id.text().strip()
+            sample_status_filter = self.sample_status.currentText()
+            
+            # Fetch data from service layer with filters
+            samples = SampleService.get_samples_by_date(
+                date_from, 
+                date_to,
+                sample_name=sample_name_filter if sample_name_filter else None,
+                user_id=user_id_filter if user_id_filter else None,
+                sample_status=sample_status_filter if sample_status_filter else None
+            )
             
             # Store original samples for template download
             self._original_samples = samples
             
-            # Group samples by sample_name (merge replicates)
+            # Group samples by (sample_name, creation_time) combination
             grouped_samples = {}
             for sample in samples:
                 sample_name = sample.get('sample_name', '')
-                if sample_name not in grouped_samples:
+                creation_time = sample.get('creation_time', '')
+                
+                # Truncate creation_time to minute precision (ignore seconds)
+                # "2026-02-10 17:34:31" -> "2026-02-10 17:34"
+                creation_time_minute = creation_time[:16] if len(creation_time) >= 16 else creation_time
+                
+                # Create unique key using sample_name and time up to minute
+                group_key = (sample_name, creation_time_minute)
+                
+                if group_key not in grouped_samples:
                     # First occurrence - use this as representative
-                    grouped_samples[sample_name] = sample.copy()
-                    grouped_samples[sample_name]['sample_ids'] = [sample.get('id', '')]
-                    grouped_samples[sample_name]['replicate_count'] = 1
+                    grouped_samples[group_key] = sample.copy()
+                    grouped_samples[group_key]['model_ids'] = [sample.get('id', '')]  # For display/operations
+                    grouped_samples[group_key]['sample_ids'] = [sample.get('sample_id', '')]  # For template export
+                    grouped_samples[group_key]['replicate_count'] = 1
                 else:
-                    # Additional replicate - update count and IDs
-                    grouped_samples[sample_name]['sample_ids'].append(sample.get('id', ''))
-                    grouped_samples[sample_name]['replicate_count'] += 1
+                    # Additional replicate at same time - update count and IDs
+                    grouped_samples[group_key]['model_ids'].append(sample.get('id', ''))
+                    grouped_samples[group_key]['sample_ids'].append(sample.get('sample_id', ''))
+                    grouped_samples[group_key]['replicate_count'] += 1
                     
-                    # Always update substance_content if current sample has it (prefer non-empty)
+                    # Update substance_content: prefer current if it's longer/more complete
                     current_substance = sample.get('substance_content', '').strip()
-                    existing_substance = grouped_samples[sample_name].get('substance_content', '').strip()
+                    existing_substance = grouped_samples[group_key].get('substance_content', '').strip()
                     
-                    if current_substance and not existing_substance:
-                        # Current has content but existing doesn't - use current
-                        grouped_samples[sample_name]['substance_content'] = current_substance
-                    elif current_substance and existing_substance and len(current_substance) > len(existing_substance):
-                        # Both have content - use the longer/more complete one
-                        grouped_samples[sample_name]['substance_content'] = current_substance
+                    if current_substance and len(current_substance) > len(existing_substance):
+                        grouped_samples[group_key]['substance_content'] = current_substance
                     
-                    # Update scanned_number to sum all scans
-                    grouped_samples[sample_name]['scanned_number'] = str(
-                        int(grouped_samples[sample_name].get('scanned_number', 0)) + 
+                    # Update scanned_number to sum all scans at this time
+                    grouped_samples[group_key]['scanned_number'] = str(
+                        int(grouped_samples[group_key].get('scanned_number', 0)) + 
                         int(sample.get('scanned_number', 0))
                     )
             
-            # Convert back to list with auto-incrementing IDs
+            # Convert back to list - use first model_id as group ID (stable database ID)
             merged_samples = []
-            for idx, (sample_name, sample_data) in enumerate(grouped_samples.items(), start=1):
-                sample_data['display_id'] = str(idx)  # Auto-increment ID for display
-                sample_data['actual_ids'] = sample_data['sample_ids']  # Keep real IDs for operations
-                sample_data['id'] = str(idx)  # Set display ID
+            for group_key, sample_data in grouped_samples.items():
+                # Use first model_id from the group as the representative ID
+                model_ids = sample_data.get('model_ids', [])
+                if model_ids:
+                    sample_data['id'] = str(model_ids[0])  # Use real database model_id
                 merged_samples.append(sample_data)
+            
+            # Sort by creation_time descending (newest first)
+            merged_samples.sort(key=lambda x: x.get('creation_time', ''), reverse=True)
+            
+            # Store merged samples for template download
+            self._merged_samples = merged_samples
             
             # Clear and populate table with merged data
             self._populate_table(merged_samples)
             
-            if merged_samples:
-                QMessageBox.information(self, "Success", f"Loaded {len(merged_samples)} sample(s) ({len(samples)} total including replicates)")
-            else:
-                QMessageBox.information(self, "No Results", "No samples found for the selected date range.")
+            # Mark that inquiry has been run at least once
+            self._inquiry_run = True
+            
+            # Only show message if not silent mode
+            if not silent:
+                if merged_samples:
+                    QMessageBox.information(self, "Success", f"Loaded {len(merged_samples)} unique import(s) from {len(samples)} total records")
+                else:
+                    QMessageBox.information(self, "No Results", "No samples found for the selected date range.")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error fetching samples:\n{str(e)}")
@@ -424,6 +491,10 @@ class SampleManagementUI(QWidget):
             checkbox.stateChanged.connect(self.on_row_checkbox_changed)
             
             # Data columns
+            creation_time_raw = sample.get('creation_time', '')
+            # Clean up creation time - handle byte strings and invalid formats
+            creation_time = self._format_creation_time(creation_time_raw)
+            
             columns = [
                 str(sample.get('id', '')),
                 str(sample.get('sample_name', '')),
@@ -436,7 +507,7 @@ class SampleManagementUI(QWidget):
                 str(sample.get('scanned_number', '0')),
                 str(sample.get('sample_status', 'Not collected')),
                 str(sample.get('user_id', '')),
-                str(sample.get('creation_time', ''))
+                creation_time
             ]
             
             # Numeric columns for sorting
@@ -460,7 +531,40 @@ class SampleManagementUI(QWidget):
                 
                 self.table.setItem(row_idx, col_idx + 1, item)
     
-    # ---------------- TICK ----------------
+    def _format_creation_time(self, time_value):
+        """Format creation time, handling invalid formats like b'   ' or empty values"""
+        if not time_value:
+            return ''
+        
+        # Convert to string if it's bytes
+        if isinstance(time_value, bytes):
+            try:
+                time_value = time_value.decode('utf-8').strip()
+            except Exception:
+                return ''
+        
+        # Convert to string
+        time_str = str(time_value).strip()
+        
+        # Check if it's empty or just whitespace
+        if not time_str or time_str in ['None', 'null', 'NULL']:
+            return ''
+        
+        # Check if it looks like a byte string representation (e.g., "b'   '")
+        if time_str.startswith("b'") or time_str.startswith('b"'):
+            try:
+                # Extract content between quotes
+                content = time_str[2:-1].strip()
+                if not content or content == '   ':
+                    return ''
+                return content
+            except Exception:
+                return ''
+        
+        # Return cleaned string
+        return time_str
+    
+    # ---------------- TICK & SELECTION ----------------
     def on_tick_clicked(self):
         """Toggle checkbox for selected rows"""
         selected_rows = self.table.selectionModel().selectedRows()
@@ -477,21 +581,208 @@ class SampleManagementUI(QWidget):
                     checkbox.setChecked(not checkbox.isChecked())
         
         self.table.clearSelection()
+    
+    def on_clear_selection_clicked(self):
+        """Clear all row selections"""
+        self.table.clearSelection()
 
-    # ---------------- ADD ----------------
-    def open_add_dialog(self):
-        dialog = SampleAddDialog(self)
+    # ---------------- ADD (Now uses Data Import) ----------------
+    def open_data_import_dialog(self):
+        """Open data import dialog to add samples with spectral data"""
+        from ui.dialogs.data_import_dialog import DataImportDialog
+        
+        dialog = DataImportDialog(self)
         if dialog.exec():
-            data = dialog.get_data()
-            # Add sample via service layer
-            success, message, sample_id = SampleService.add_sample(data)
+            import_data = dialog.get_data()
             
-            if success:
-                QMessageBox.information(self, "Success", message)
-                # Refresh table to show new sample
-                self.on_inquiry_clicked()
-            else:
-                QMessageBox.critical(self, "Error", message)
+            # Check for both 'file_paths' and 'paths' (different dialogs use different keys)
+            file_paths = import_data.get('file_paths') or import_data.get('paths', [])
+            if not import_data or not file_paths:
+                QMessageBox.warning(self, "Warning", "No files selected for import")
+                return
+            
+            # Normalize the key to 'file_paths' for consistent processing
+            import_data['file_paths'] = file_paths
+            
+            # Import files using the same logic as data management
+            self.import_spectral_files(import_data)
+    
+    def import_spectral_files(self, import_data):
+        """Import spectral data files and create sample + model_data entries - matches data_management logic"""
+        from datetime import datetime
+        import os
+        import pandas as pd
+        
+        # Capture import start time - will be used for ALL files in this batch
+        batch_import_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"Batch import started at: {batch_import_time}")
+        
+        try:
+            file_paths = import_data.get('file_paths', [])
+            separator = import_data.get('separator', '_')
+            instrument = import_data.get('instrument', 'Unknown')
+            file_format = import_data.get('format', 'csv')
+            mode = import_data.get('mode', '').lower()
+            
+            conn = self._get_db_connection()
+            if not conn:
+                QMessageBox.critical(self, "Database Error", "Failed to connect to database")
+                return
+            
+            cursor = conn.cursor()
+            
+            imported_count = 0
+            failed_files = []
+            
+            for file_path in file_paths:
+                try:
+                    print(f"Processing file: {file_path}")
+                    
+                    # Skip non-CSV files
+                    if not file_path.lower().endswith('.csv'):
+                        print(f"Skipping non-CSV file: {file_path}")
+                        continue
+                    
+                    # Read CSV header rows (1-18) to extract metadata
+                    header_data = SpectralImportService.extract_csv_header_metadata(file_path)
+                    
+                    # Read CSV file - skip first 18 rows (header/metadata)
+                    print(f"Reading CSV file (skipping first 18 rows)...")
+                    try:
+                        data_df = pd.read_csv(file_path, skiprows=18, on_bad_lines='skip')
+                        print(f"Successfully read CSV with skiprows=18")
+                    except Exception as e:
+                        print(f"Fallback: trying with engine='python'...")
+                        data_df = pd.read_csv(file_path, skiprows=18, engine='python', on_bad_lines='skip')
+                        print(f"Successfully read CSV with python engine")
+                    
+                    # Extract metadata from filename and mode
+                    filename = os.path.basename(file_path)
+                    
+                    # Determine sample name based on mode
+                    if 'folder' in mode:
+                        folder_path = os.path.dirname(file_path)
+                        folder_name = os.path.basename(folder_path)
+                        if separator in folder_name:
+                            sample_name = folder_name.split(separator)[-1]  # Get text after separator
+                        else:
+                            sample_name = folder_name
+                    else:
+                        sample_name = filename.replace('.csv', '')
+                    
+                    # Truncate sample name to 50 characters (database limit: VARCHAR(50))
+                    MAX_SAMPLE_NAME_LENGTH = 50
+                    if len(sample_name) > MAX_SAMPLE_NAME_LENGTH:
+                        # Keep first 40 chars + last 10 chars to preserve uniqueness
+                        sample_name = sample_name[:40] + sample_name[-10:]
+                        print(f"Sample name truncated to {MAX_SAMPLE_NAME_LENGTH} chars: {sample_name}")
+                    
+                    print(f"Sample name: {sample_name}, Columns: {list(data_df.columns)}")
+                    
+                    # Extract wavelength and absorbance data
+                    wavelength_str = ""
+                    absorbance_str = ""
+                    absorb_points = 0
+                    
+                    if 'Wavelength' in data_df.columns and 'Absorbance' in data_df.columns:
+                        wavelength_str = ",".join(data_df['Wavelength'].astype(str).tolist())
+                        absorbance_str = ",".join(data_df['Absorbance'].astype(str).tolist())
+                        absorb_points = len(data_df)
+                        print(f"Found wavelength and absorbance data. Points: {absorb_points}")
+                    else:
+                        print(f"Warning: Could not find Wavelength/Absorbance columns. Available: {list(data_df.columns)}")
+                    
+                    # Get detector temperature and humidity from header metadata
+                    detector_temp = header_data.get('detector_temp', '0')
+                    humidity = header_data.get('humidity', '0')
+                    creation_time = header_data.get('creation_time', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    
+                    # Extract lot number based on mode
+                    if 'folder' in mode:
+                        folder_path = os.path.dirname(file_path)
+                        folder_name = os.path.basename(folder_path)
+                        if separator in folder_name:
+                            lot_number = folder_name.split(separator)[0]  # Get text before separator
+                        else:
+                            lot_number = folder_name
+                    else:
+                        lot_number = ''
+                    
+                    # Double-check sample_name length before insert (safety check)
+                    if len(sample_name) > 50:
+                        print(f"WARNING: sample_name still too long ({len(sample_name)} chars), forcing truncation")
+                        sample_name = sample_name[:50]
+                    
+                    # Insert into database using shared service
+                    sample_id = SpectralImportService.insert_sample_to_db(
+                        conn, sample_name, instrument, lot_number, absorb_points,
+                        wavelength_str, absorbance_str, data_df,
+                        detector_temp, humidity, batch_import_time
+                    )
+                    
+                    if sample_id:
+                        imported_count += 1
+                        print(f"✓ Successfully imported: {sample_id} - {sample_name}")
+                    else:
+                        failed_files.append(f"{os.path.basename(file_path)}: Database insertion failed")
+                        print(f"✗ Failed to insert: {sample_name}")
+                    
+                except Exception as e:
+                    failed_files.append(f"{os.path.basename(file_path)}: {str(e)}")
+                    print(f"✗ Error processing {file_path}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            # Show result message
+            message = f"Successfully imported {imported_count} file(s)"
+            if failed_files:
+                message += f"\n\nFailed files ({len(failed_files)}):\n" + "\n".join(failed_files[:5])
+                if len(failed_files) > 5:
+                    message += f"\n... and {len(failed_files) - 5} more"
+            
+            QMessageBox.information(self, "Import Complete", message)
+            
+            # Refresh table
+            self.on_inquiry_clicked()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Import failed: {str(e)}")
+            print(f"Error in import: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Removed: _generate_sample_id - now using SpectralImportService.generate_sample_id()
+    # Removed: _parse_spectral_file - dead code, never called
+    
+    def _get_db_connection(self):
+        """Get database connection with READ COMMITTED isolation level for data visibility."""
+        import pymysql
+        from config import DB_CONFIG
+        
+        try:
+            conn = pymysql.connect(
+                host=DB_CONFIG['host'],
+                user=DB_CONFIG['user'],
+                password=DB_CONFIG['password'],
+                database=DB_CONFIG['database'],
+                port=DB_CONFIG['port'],
+                charset=DB_CONFIG['charset'],
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=False
+            )
+            # Set transaction isolation to READ COMMITTED to see latest committed data
+            cursor = conn.cursor()
+            cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            cursor.close()
+            return conn
+        except Exception as e:
+            print(f"Database connection error: {e}")
+            return None
 
     # ---------------- MODIFY ----------------
     def open_modify_dialog(self):
@@ -514,21 +805,23 @@ class SampleManagementUI(QWidget):
             QMessageBox.information(self, "Information", "Please tick only one sample to modify!")
             return
         
-        # Get the first actual sample ID from the ticked row
+        # Get the model_id and find corresponding sample_id
         row_idx = ticked_rows[0]
-        sample_name_item = self.table.item(row_idx, 2)
-        if not sample_name_item:
+        model_id_item = self.table.item(row_idx, 1)  # Column 1 has model_id
+        if not model_id_item:
             QMessageBox.warning(self, "Error", "Failed to get sample information")
             return
         
-        sample_name = sample_name_item.text()
+        model_id = model_id_item.text()
         
-        # Get the first actual sample ID for this sample name
+        # Get the first sample_id for this model_id from merged samples
         sample_id = None
-        if hasattr(self, '_original_samples'):
-            for sample in self._original_samples:
-                if sample.get('sample_name') == sample_name:
-                    sample_id = sample.get('id')
+        if hasattr(self, '_merged_samples'):
+            for merged_sample in self._merged_samples:
+                if merged_sample.get('id') == model_id:
+                    sample_ids = merged_sample.get('sample_ids', [])
+                    if sample_ids:
+                        sample_id = sample_ids[0]  # Use first sample_id
                     break
         
         if not sample_id:
@@ -596,16 +889,16 @@ class SampleManagementUI(QWidget):
                 if layout is not None and layout.count() > 0:
                     checkbox = layout.itemAt(0).widget()
                     if isinstance(checkbox, QCheckBox) and checkbox.isChecked():
-                        # Get sample name from column 2 to find actual IDs
-                        sample_name_item = self.table.item(row_idx, 2)
-                        if sample_name_item:
-                            sample_name = sample_name_item.text()
-                            # Get actual sample IDs from original ungrouped samples
-                            if hasattr(self, '_original_samples'):
-                                for sample in self._original_samples:
-                                    if sample.get('sample_name') == sample_name:
-                                        sample_id = sample.get('id')
-                                        if sample_id and str(sample_id).strip():
-                                            sample_ids.append(sample_id)
+                        # Get model ID (now real database ID)
+                        model_id_item = self.table.item(row_idx, 1)
+                        if model_id_item and hasattr(self, '_merged_samples'):
+                            model_id = model_id_item.text()
+                            # Find the merged sample with this model_id
+                            for merged_sample in self._merged_samples:
+                                if merged_sample.get('id') == model_id:
+                                    # Get all sample_ids for this group
+                                    group_sample_ids = merged_sample.get('sample_ids', [])
+                                    sample_ids.extend(group_sample_ids)
+                                    break
         return sample_ids
 

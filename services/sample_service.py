@@ -273,7 +273,6 @@ class SampleService:
             export_data = []
             for sample in sample_data:
                 row = {
-                    "whether the new": "",
                     "sample ID": sample['sample_id'],
                     "sample name": sample['sample_name']
                 }

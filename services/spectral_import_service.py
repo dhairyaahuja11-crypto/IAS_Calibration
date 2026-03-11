@@ -137,9 +137,13 @@ class SpectralImportService:
             
             print(f"Wave range: {model_wavemin} - {model_wavemax}")
             
-            # Truncate sample_name to 50 chars and create_person to 20 chars
+            # Truncate sample_name to 50 chars and set create_person to Windows username (max 20 chars)
             sample_name_truncated = sample_name[:50] if len(sample_name) > 50 else sample_name
-            create_person = f'ui_import_{instrument}_{lot_number}'[:20]
+            try:
+                import getpass
+                create_person = getpass.getuser()[:20]
+            except Exception:
+                create_person = 'import_user'
             
             # ===== INSERT INTO sample TABLE =====
             insert_sample = """

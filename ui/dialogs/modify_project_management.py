@@ -332,32 +332,44 @@ class ModifyProjectDialog(QDialog):
             'sample_type': self.sample_type.currentText(),
             'measurement_type': self.measurement_type.currentText(),
             'measurement_index': [],
-            'remark': self.remark.text().strip()
+            'remark': self.remark.text().strip(),
+            'state': 'modified'
         }
-        
+
         # Get checked measurement indexes
         for i in range(self.index_list.count()):
             item = self.index_list.item(i)
             if item.checkState() == Qt.CheckState.Checked:
                 project_data['measurement_index'].append(item.text())
-        
+
         # Validate
         if not project_data['project_name']:
             QMessageBox.warning(self, "Validation Error", "Please enter a project name.")
             return
-        
+
         if not project_data['measurement_index']:
             QMessageBox.warning(self, "Validation Error", "Please select at least one measurement index.")
             return
-        
+
+        # Validate lab value for all samples
+        missing_lab_value = False
+        for sample in self.project_samples:
+            lab_value = sample.get('substance_content', '') if isinstance(sample, dict) else getattr(sample, 'substance_content', '')
+            if not lab_value or str(lab_value).strip() == '' or str(lab_value).lower() == 'not collected':
+                missing_lab_value = True
+                break
+        if missing_lab_value:
+            QMessageBox.warning(self, "Lab Value Missing", "Lab values missing for one or more samples. Please ensure all samples have valid lab values before saving.")
+            return
+
         # Get project ID
         project_id = self.project_data.get('project_id')
         if isinstance(project_id, bytes):
             project_id = project_id.decode('utf-8')
-        
+
         # Update in database
         success, message = ProjectService.update_project(project_id, project_data)
-        
+
         if success:
             QMessageBox.information(self, "Success", message)
             self.accept()

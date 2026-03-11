@@ -1,5 +1,5 @@
 # Spectral Analysis System - Requirements
-Python=3.14.2
+#Python=3.14.2
 
 # GUI Framework
 PyQt6=6.10.1

@@ -339,7 +339,8 @@ class ProjectService:
                     analysis_type = %s,
                     analysis_object = %s,
                     project_remark = %s,
-                    modify_time = %s
+                    modify_time = %s,
+                    project_state = %s
                 WHERE project_id = %s
             """
             
@@ -350,6 +351,7 @@ class ProjectService:
                 analysis_object,
                 project_remark,
                 modify_time,
+                'Modified',
                 project_id
             ))
             
@@ -508,41 +510,27 @@ class ProjectService:
                 print(f"Debug - First 3 samples: {selected_samples[:3] if len(selected_samples) > 0 else 'NONE'}")
                 
                 if has_linking_table:
-                    # Store ALL sample IDs including replicates
+                    # Store ALL numeric sample IDs including replicates
                     all_sample_ids = []
                     for sample in selected_samples:
-                        sample_id = sample.get('id') or sample.get('sample_id') or sample.get('sample_name')
+                        sample_id = sample.get('sample_id')
                         if sample_id and str(sample_id).strip():
                             all_sample_ids.append(str(sample_id).strip())
-                    
                     print(f"Debug - Total samples from selection: {len(selected_samples)}")
                     print(f"Debug - Sample IDs to store (including all replicates): {len(all_sample_ids)}")
                     print(f"Debug - Sample IDs list: {all_sample_ids[:5]}")
-                    
-                    # Insert ALL samples with generated unique IDs
-                    samples_added = 0
-                    for sample_id in all_sample_ids:
-                        try:
-                            # Generate unique ID for the project-sample association
-                            unique_id = f"{project_id}_{sample_id}"
-                            
-                            cursor.execute("""
-                                INSERT INTO project_sample (id, project_id, sample_id)
-                                VALUES (%s, %s, %s)
-                            """, (unique_id, project_id, sample_id))
-                            
-                            samples_added += 1
-                            print(f"  ✓ Associated sample {sample_id} with id={unique_id}")
-                        except Exception as e:
-                            print(f"  ✗ Error associating sample {sample_id}: {e}")
-                            import traceback
-                            traceback.print_exc()
-                    
-                    print(f"Total samples associated (including replicates): {samples_added}/{len(all_sample_ids)}")
+                    # Bulk insert all samples
+                    if all_sample_ids:
+                        values = [(f"{project_id}_{sample_id}", project_id, sample_id) for sample_id in all_sample_ids]
+                        sql = "INSERT INTO project_sample (id, project_id, sample_id) VALUES (%s, %s, %s)"
+                        cursor.executemany(sql, values)
+                        print(f"Total samples associated (including replicates): {len(all_sample_ids)}/{len(all_sample_ids)}")
+                    else:
+                        print("No sample_ids to associate.")
                 else:
                     # Update samples directly to reference the project
                     for sample in selected_samples:
-                        sample_id = sample.get('id') or sample.get('sample_id')
+                        sample_id = sample.get('sample_id')
                         if sample_id:
                             cursor.execute("""
                                 UPDATE sample SET project_id = %s WHERE sample_id = %s

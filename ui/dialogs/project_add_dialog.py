@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QLineEdit, QComboBox, QPushButton,
     QVBoxLayout, QHBoxLayout, QGridLayout, QListWidget,
-    QListWidgetItem, QTableWidget, QTableWidgetItem, QWidget, QMessageBox
+    QListWidgetItem, QTableWidget, QTableWidgetItem, QWidget, QMessageBox, QRadioButton, QButtonGroup
 )
 from PyQt6.QtCore import Qt
 from ui.dialogs.sample_selection_dialog import SampleSelectionDialog
@@ -9,6 +9,7 @@ from services.project_service import ProjectService
 
 
 class ProjectAddDialog(QDialog):
+    # _on_measurement_index_clicked is no longer needed with radio buttons
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("project name")
@@ -16,6 +17,7 @@ class ProjectAddDialog(QDialog):
         self.selected_samples = []  # Store selected samples
         self._build_ui()
         self._connect_signals()
+
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -39,9 +41,10 @@ class ProjectAddDialog(QDialog):
 
         form_layout.addWidget(QLabel("measurement index:"), 1, 2)
         self.measurement_index_list = QListWidget()
-        # Load measurement indexes dynamically from content_dictionary
-        self.load_measurement_indexes()
         form_layout.addWidget(self.measurement_index_list, 1, 3, 3, 1)
+        # Button group for exclusive radio selection
+        self.measurement_radio_group = QButtonGroup(self)
+        self.measurement_radio_group.setExclusive(True)
 
         form_layout.addWidget(QLabel("remark:"), 2, 0)
         self.remark_edit = QLineEdit()
@@ -91,46 +94,55 @@ class ProjectAddDialog(QDialog):
 
         main_layout.addLayout(btn_layout)
 
+        # Try to load measurement indexes, but don't let it break UI
+        try:
+            self.load_measurement_indexes()
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not load measurement indexes:\n{e}")
+
     def _connect_signals(self):
         """Connect signals for buttons"""
-        self.sample_select_btn.clicked.connect(self.open_sample_selection)
+        if hasattr(self, 'sample_select_btn'):
+            self.sample_select_btn.clicked.connect(self.open_sample_selection)
     
     def load_measurement_indexes(self):
-        """Load measurement indexes dynamically from content_dictionary table"""
+        """Load measurement indexes dynamically from content_dictionary table and use radio buttons"""
         try:
             from database.db import get_connection
-            
             conn = get_connection()
             cursor = conn.cursor()
-            
-            # Fetch all parameters from content_dictionary
             cursor.execute("SELECT content_name FROM content_dictionary ORDER BY content_name")
             parameters = cursor.fetchall()
-            
             cursor.close()
-            conn.close()
-            
-            # Populate the list widget
             self.measurement_index_list.clear()
-            for param in parameters:
-                param_name = param['content_name']
-                item = QListWidgetItem(param_name)
-                item.setCheckState(Qt.CheckState.Unchecked)
-                self.measurement_index_list.addItem(item)
-            
-            if not parameters:
-                # Fallback to default if table is empty
-                for text in ["Protein", "Oil", "Moisture"]:
-                    item = QListWidgetItem(text)
-                    item.setCheckState(Qt.CheckState.Unchecked)
+            self.measurement_radio_group = QButtonGroup(self)
+            self.measurement_radio_group.setExclusive(True)
+            if parameters:
+                for idx, param in enumerate(parameters):
+                    param_name = param['content_name']
+                    item = QListWidgetItem()
+                    radio = QRadioButton(param_name)
                     self.measurement_index_list.addItem(item)
-                    
+                    self.measurement_index_list.setItemWidget(item, radio)
+                    self.measurement_radio_group.addButton(radio, idx)
+            else:
+                for idx, text in enumerate(["Protein", "Oil", "Moisture"]):
+                    item = QListWidgetItem()
+                    radio = QRadioButton(text)
+                    self.measurement_index_list.addItem(item)
+                    self.measurement_index_list.setItemWidget(item, radio)
+                    self.measurement_radio_group.addButton(radio, idx)
         except Exception as e:
             print(f"Error loading measurement indexes: {e}")
-            # Fallback to default on error
-            for text in ["Protein", "Oil", "Moisture"]:
-                item = QListWidgetItem(text)
-                item.setCheckState(Qt.CheckState.Unchecked)
+            self.measurement_index_list.clear()
+            self.measurement_radio_group = QButtonGroup(self)
+            self.measurement_radio_group.setExclusive(True)
+            for idx, text in enumerate(["Protein", "Oil", "Moisture"]):
+                item = QListWidgetItem()
+                radio = QRadioButton(text)
+                self.measurement_index_list.addItem(item)
+                self.measurement_index_list.setItemWidget(item, radio)
+                self.measurement_radio_group.addButton(radio, idx)
                 self.measurement_index_list.addItem(item)
 
     def _connect_signals(self):
@@ -148,32 +160,34 @@ class ProjectAddDialog(QDialog):
     def populate_sample_table(self, samples):
         """Populate the sample table with selected samples"""
         self.sample_table.setRowCount(0)
-        
         for sample in samples:
             row = self.sample_table.rowCount()
             self.sample_table.insertRow(row)
-            
+            # Always use the user_id from the sample dict, fallback to 'Unknown' if missing
+            user_id = sample.get('user_id', None)
+            if not user_id:
+                user_id = 'Unknown'
             columns = [
                 sample.get('sample_name', ''),
                 sample.get('sample_status', ''),
                 sample.get('sample_quantity', '0'),
                 sample.get('scanning_method', ''),
-                sample.get('user_id', ''),
+                user_id,
                 sample.get('creation_time', '')
             ]
-            
             for col, value in enumerate(columns):
                 item = QTableWidgetItem(str(value))
                 self.sample_table.setItem(row, col, item)
 
     # ---------------- DATA ACCESS ----------------
     def get_data(self):
-        measurement_indexes = []
-        for i in range(self.measurement_index_list.count()):
-            item = self.measurement_index_list.item(i)
-            if item.checkState() == Qt.CheckState.Checked:
-                measurement_indexes.append(item.text())
-
+        # Only one radio button can be selected
+        checked_id = self.measurement_radio_group.checkedId()
+        checked_text = None
+        if checked_id != -1:
+            checked_button = self.measurement_radio_group.button(checked_id)
+            checked_text = checked_button.text()
+        measurement_indexes = [checked_text] if checked_text else []
         return {
             "project_name": self.project_name_edit.text(),
             "sample_type": self.sample_type_combo.currentText(),
@@ -181,7 +195,7 @@ class ProjectAddDialog(QDialog):
             "measurement_index": measurement_indexes,
             "remark": self.remark_edit.text(),
             "user_id": self.user_id_edit.text(),
-        }    
+        }
     def save_project(self):
         """Save the project with all form data and selected samples"""
         # Get form data
@@ -200,19 +214,31 @@ class ProjectAddDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", "Please select at least one measurement index.")
             return
         
-        # Create project in database
+        # Validate that all selected samples have substance content (lab value)
+        missing_lab_value = False
+        for sample in self.selected_samples:
+            # Accept both dict and object with attribute
+            lab_value = sample.get('substance_content', '') if isinstance(sample, dict) else getattr(sample, 'substance_content', '')
+            if not lab_value or str(lab_value).strip() == '' or str(lab_value).lower() == 'not collected':
+                missing_lab_value = True
+                break
+
+        if missing_lab_value:
+            QMessageBox.warning(self, "Lab Value Missing", "Lab values missing")
+            return
+
+        # Debug: print selected_samples before creating project
+        print("[DEBUG] selected_samples before create_project:", self.selected_samples)
         try:
             success, message, project_id = ProjectService.create_project(
                 project_data, 
                 self.selected_samples
             )
-            
             if success:
                 QMessageBox.information(self, "Success", message)
                 self.accept()  # Close dialog with success
             else:
                 QMessageBox.critical(self, "Error", message)
-                
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create project: {str(e)}")
             import traceback

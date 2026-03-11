@@ -113,6 +113,9 @@ class SampleManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("User ID:"), 0, 4)
         self.user_id = QLineEdit()
+        # Set default value from Windows username, but allow editing
+        import getpass
+        self.user_id.setText(getpass.getuser())
         filter_layout.addWidget(self.user_id, 0, 5)
 
         filter_layout.addWidget(QLabel("Creation time:"), 0, 6)
@@ -656,27 +659,41 @@ class SampleManagementUI(QWidget):
                         data_df = pd.read_csv(file_path, skiprows=18, engine='python', on_bad_lines='skip')
                         print(f"Successfully read CSV with python engine")
                     
-                    # Extract metadata from filename and mode
+                    # Use sample name only during import; elsewhere, always use DB value
+
+                    # Always use file name without extension as base
                     filename = os.path.basename(file_path)
-                    
-                    # Determine sample name based on mode
-                    if 'folder' in mode:
-                        folder_path = os.path.dirname(file_path)
-                        folder_name = os.path.basename(folder_path)
-                        if separator in folder_name:
-                            sample_name = folder_name.split(separator)[-1]  # Get text after separator
-                        else:
-                            sample_name = folder_name
+                    base_name, _ = os.path.splitext(filename)
+
+                    # Try to extract sample_name using logic, fallback to base_name
+                    sample_name = ''
+                    parts = base_name.split('_')
+                    # Example logic: use part after 2nd underscore if possible, else fallback
+                    if len(parts) > 2 and len(parts[2]) > 14:
+                        sample_name = parts[2][:-14]
+                    elif len(parts) > 2:
+                        sample_name = parts[2]
+                    elif len(parts) > 1:
+                        sample_name = parts[1]
                     else:
-                        sample_name = filename.replace('.csv', '')
-                    
+                        sample_name = base_name
+
+                    # Final fallback: if sample_name is empty or whitespace, use base_name
+                    if not sample_name or not sample_name.strip():
+                        sample_name = base_name
+
+                    # Guarantee: if still empty, use 'sample_' + a unique suffix (timestamp)
+                    if not sample_name or not sample_name.strip():
+                        from datetime import datetime
+                        sample_name = f"sample_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+
                     # Truncate sample name to 50 characters (database limit: VARCHAR(50))
                     MAX_SAMPLE_NAME_LENGTH = 50
                     if len(sample_name) > MAX_SAMPLE_NAME_LENGTH:
                         # Keep first 40 chars + last 10 chars to preserve uniqueness
                         sample_name = sample_name[:40] + sample_name[-10:]
                         print(f"Sample name truncated to {MAX_SAMPLE_NAME_LENGTH} chars: {sample_name}")
-                    
+
                     print(f"Sample name: {sample_name}, Columns: {list(data_df.columns)}")
                     
                     # Extract wavelength and absorbance data

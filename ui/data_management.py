@@ -882,21 +882,14 @@ class DataManagementUI(QWidget):
                         data_df = pd.read_csv(file_path, skiprows=18, engine='python', on_bad_lines='skip')
                         print(f"Successfully read CSV with python engine")
                     
-                    # Extract metadata from filename and mode
+                    # Unified sample name extraction for both file and folder
                     filename = os.path.basename(file_path)
-                    mode = data.get('mode', '').lower()
-                    
-                    # If "add new samples named after folder" mode, extract sample name from folder
-                    if 'folder' in mode:
-                        folder_path = os.path.dirname(file_path)
-                        folder_name = os.path.basename(folder_path)
-                        separator = data.get('separator', '_')
-                        if separator in folder_name:
-                            sample_name = folder_name.split(separator)[-1]  # Get text after separator
-                        else:
-                            sample_name = folder_name  # Use entire folder name if separator not found
+                    base_name = filename.replace('.csv', '')
+                    parts = base_name.split('_')
+                    if len(parts) > 2:
+                        sample_name = parts[2][0:-14]
                     else:
-                        sample_name = data.get('sample', filename.replace('.csv', ''))
+                        sample_name = base_name
                     
                     print(f"Sample name: {sample_name}, Columns: {list(data_df.columns)}")
                     
@@ -1073,17 +1066,13 @@ class DataManagementUI(QWidget):
             filename = os.path.basename(file_path)
             mode = data.get('mode', '').lower()
             
-            # If "add new samples named after folder" mode, extract sample name from folder
-            if 'folder' in mode:
-                folder_path = os.path.dirname(file_path)
-                folder_name = os.path.basename(folder_path)
-                separator = data.get('separator', '_')
-                if separator in folder_name:
-                    sample_name = folder_name.split(separator)[-1]  # Get text after separator
-                else:
-                    sample_name = folder_name  # Use entire folder name if separator not found
+            # Unified sample name extraction for both file and folder
+            base_name = filename.replace('.csv', '')
+            parts = base_name.split('_')
+            if len(parts) > 2:
+                sample_name = parts[2][0:-14]
             else:
-                sample_name = data.get('sample', filename.replace('.csv', ''))
+                sample_name = base_name
             
             # Truncate sample_name to fit VARCHAR(50) limit
             if len(sample_name) > 50:

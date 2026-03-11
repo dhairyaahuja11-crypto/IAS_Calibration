@@ -8,12 +8,14 @@ from datetime import datetime
 from ui.custom_widgets import DateEditWithToday
 
 
+
 class SampleSelectionDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, preselected_sample_keys=None):
         super().__init__(parent)
         self.setWindowTitle("sample selection")
         self.resize(1200, 700)
         self.selected_samples = []
+        self.preselected_sample_keys = set(preselected_sample_keys) if preselected_sample_keys else set()
         self._build_ui()
         self._connect_signals()
         # Auto-load samples when dialog opens
@@ -71,10 +73,11 @@ class SampleSelectionDialog(QDialog):
         
         # Create header labels
         header_labels = [
-            "", "new sample name", "sample name", "sample quantity",
+            "", "sample ID", "new sample name", "sample name", "sample quantity",
             "scanned number", "substance content", "scanning method",
             "sample status", "User ID", "creation time"
         ]
+        self.sample_table.setColumnCount(len(header_labels))
         self.sample_table.setHorizontalHeaderLabels(header_labels)
         
         # Set column widths
@@ -233,20 +236,14 @@ class SampleSelectionDialog(QDialog):
     def populate_table(self, samples):
         """Populate the table with sample data"""
         print(f"Populating table with {len(samples)} samples")
-        
         self.sample_table.setRowCount(0)
         self.sample_table.setSortingEnabled(False)
-        
-        # Set the select all checkbox in the header
         self.sample_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header = self.sample_table.horizontalHeader()
-        
         for idx, sample in enumerate(samples):
             print(f"Adding sample {idx}: {sample.get('sample_name', 'N/A')}")
-            
             row = self.sample_table.rowCount()
             self.sample_table.insertRow(row)
-            
             # Checkbox column
             checkbox = QCheckBox()
             checkbox_widget = QWidget()
@@ -255,31 +252,34 @@ class SampleSelectionDialog(QDialog):
             checkbox_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
             checkbox_layout.setContentsMargins(0, 0, 0, 0)
             self.sample_table.setCellWidget(row, 0, checkbox_widget)
-            
-            # Store ALL sample IDs (for grouped samples) in checkbox for later retrieval
-            sample_ids = sample.get('sample_ids', [sample.get('id')])
-            checkbox.setProperty("sample_id", sample_ids[0])  # Store first ID
-            checkbox.setProperty("sample_ids", sample_ids)  # Store all IDs for grouped samples
-            
-            # Data columns
-            # Fix creation_time if it's bytes
+            # Store sample key for preselection
+            sample_name = sample.get('sample_name', '')
             creation_time = sample.get('creation_time', '')
+            sample_id = sample.get('sample_id', '')
+            if isinstance(sample_name, bytes):
+                sample_name = sample_name.decode('utf-8')
             if isinstance(creation_time, bytes):
                 creation_time = creation_time.decode('utf-8')
-            
+            if isinstance(sample_id, bytes):
+                sample_id = sample_id.decode('utf-8')
+            key = f"{sample_name}|{creation_time}"
+            checkbox.setProperty("sample_key", key)
+            checkbox.setProperty("sample_id", sample_id)
+            # Store all replicate sample_ids for this group (for bulk association)
+            sample_ids = sample.get('sample_ids', [sample_id])
+            checkbox.setProperty("sample_ids", sample_ids)
+            # Preselect if in preselected_sample_keys
+            if self.preselected_sample_keys and key in self.preselected_sample_keys:
+                checkbox.setChecked(True)
+            # Data columns
             substance_content = sample.get('substance_content', '')
             if isinstance(substance_content, bytes):
                 substance_content = substance_content.decode('utf-8')
-            
             user_id = sample.get('user_id', '')
             if isinstance(user_id, bytes):
                 user_id = user_id.decode('utf-8')
-            
-            sample_name = sample.get('sample_name', '')
-            if isinstance(sample_name, bytes):
-                sample_name = sample_name.decode('utf-8')
-            
             columns = [
+                str(sample_id),  # Show numeric sample_id
                 '',  # new_sample_name - empty for now, used for merged samples
                 str(sample_name),
                 str(sample.get('sample_quantity', '0')),
@@ -290,42 +290,35 @@ class SampleSelectionDialog(QDialog):
                 str(user_id),
                 str(creation_time)
             ]
-            
             for col, value in enumerate(columns, start=1):
                 item = QTableWidgetItem(value if value else '')
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.sample_table.setItem(row, col, item)
-        
         self.sample_table.setSortingEnabled(True)
         print(f"Table population complete. Row count: {self.sample_table.rowCount()}")
 
     def get_selected_samples(self):
         """Get list of selected sample IDs (includes ALL replicates)"""
         selected = []
-        
         for row in range(self.sample_table.rowCount()):
             checkbox_widget = self.sample_table.cellWidget(row, 0)
             if checkbox_widget:
                 checkbox = checkbox_widget.findChild(QCheckBox)
                 if checkbox and checkbox.isChecked():
-                    # Get all sample IDs (for grouped samples, this includes all replicates)
                     sample_ids = checkbox.property("sample_ids")
                     if not sample_ids:
-                        # Fallback to single ID if sample_ids not set
                         sample_ids = [checkbox.property("sample_id")]
-                    
-                    # Add ALL replicate sample IDs
                     for sample_id in sample_ids:
                         sample_data = {
-                            'id': sample_id,
-                            'sample_name': self.sample_table.item(row, 2).text() if self.sample_table.item(row, 2) else '',
-                            'sample_quantity': self.sample_table.item(row, 3).text() if self.sample_table.item(row, 3) else '0',
-                            'scanned_number': self.sample_table.item(row, 4).text() if self.sample_table.item(row, 4) else '0',
-                            'substance_content': self.sample_table.item(row, 5).text() if self.sample_table.item(row, 5) else '',
-                            'scanning_method': self.sample_table.item(row, 6).text() if self.sample_table.item(row, 6) else '',
-                            'sample_status': self.sample_table.item(row, 7).text() if self.sample_table.item(row, 7) else '',
-                            'user_id': self.sample_table.item(row, 8).text() if self.sample_table.item(row, 8) else '',
-                            'creation_time': self.sample_table.item(row, 9).text() if self.sample_table.item(row, 9) else ''
+                            'sample_id': sample_id,
+                            'sample_name': self.sample_table.item(row, 3).text() if self.sample_table.item(row, 3) else '',
+                            'sample_quantity': self.sample_table.item(row, 4).text() if self.sample_table.item(row, 4) else '0',
+                            'scanned_number': self.sample_table.item(row, 5).text() if self.sample_table.item(row, 5) else '0',
+                            'substance_content': self.sample_table.item(row, 6).text() if self.sample_table.item(row, 6) else '',
+                            'scanning_method': self.sample_table.item(row, 7).text() if self.sample_table.item(row, 7) else '',
+                            'sample_status': self.sample_table.item(row, 8).text() if self.sample_table.item(row, 8) else '',
+                            'user_id': self.sample_table.item(row, 9).text() if self.sample_table.item(row, 9) else '',
+                            'creation_time': self.sample_table.item(row, 10).text() if self.sample_table.item(row, 10) else ''
                         }
                         selected.append(sample_data)
         return selected
@@ -333,6 +326,7 @@ class SampleSelectionDialog(QDialog):
     def on_ok_clicked(self):
         """Handle OK button click"""
         self.selected_samples = self.get_selected_samples()
+        print("[DEBUG] selected_samples in SampleSelectionDialog:", self.selected_samples)
         if not self.selected_samples:
             QMessageBox.warning(self, "Warning", "Please select at least one sample.")
             return

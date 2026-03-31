@@ -13,6 +13,80 @@ from database.db import get_connection
 
 class SampleService:
     """Service class for sample management operations"""
+
+    @staticmethod
+    def _normalize_substance_import_dataframe(df):
+        """
+        Accept both supported template layouts:
+        1. Row-wise: one sample per row with columns like Sample ID, Sample Name, Protein...
+        2. Matrix: parameters as rows and sample names as columns.
+        """
+        import pandas as pd
+
+        if df.empty:
+            return df
+
+        df = df.copy()
+        df.columns = [str(col).strip() for col in df.columns]
+
+        first_header = str(df.columns[0]).strip().lower() if len(df.columns) > 0 else ""
+        first_column_values = {
+            str(value).strip().lower()
+            for value in df.iloc[:, 0].tolist()
+            if pd.notna(value) and str(value).strip()
+        }
+
+        is_matrix_layout = (
+            first_header in {"parameter", "parameters", "field", "fields"}
+            or "sample name" in first_column_values
+        )
+
+        if not is_matrix_layout:
+            df.columns = df.columns.str.strip().str.lower()
+            return df
+
+        sample_columns = [str(col).strip() for col in df.columns[1:] if str(col).strip()]
+        if not sample_columns:
+            return pd.DataFrame()
+
+        sample_ids = {sample_name: "" for sample_name in sample_columns}
+        property_rows = []
+
+        for _, row in df.iterrows():
+            row_label = str(row.iloc[0]).strip()
+            row_label_lower = row_label.lower()
+
+            if not row_label:
+                continue
+
+            if row_label_lower == "sample id":
+                for idx, sample_name in enumerate(sample_columns, start=1):
+                    value = row.iloc[idx] if idx < len(row) else ""
+                    if pd.notna(value):
+                        sample_ids[sample_name] = str(value).strip()
+                continue
+
+            if row_label_lower in {"whether the new", "sample name"}:
+                continue
+
+            property_rows.append((row_label, row))
+
+        records = []
+        for idx, sample_name in enumerate(sample_columns, start=1):
+            record = {
+                "sample id": sample_ids.get(sample_name, ""),
+                "sample name": sample_name
+            }
+
+            for property_name, property_row in property_rows:
+                value = property_row.iloc[idx] if idx < len(property_row) else ""
+                record[property_name.strip().lower()] = value
+
+            records.append(record)
+
+        normalized_df = pd.DataFrame(records)
+        normalized_df.columns = normalized_df.columns.str.strip().str.lower()
+        return normalized_df
     
     @staticmethod
     def get_samples_by_date(date_from, date_to, sample_name=None, user_id=None, sample_status=None):
@@ -146,11 +220,8 @@ class SampleService:
             
             query += " ORDER BY md.create_time DESC"
             
-            print(f"Executing query with dates: {date_from} to {date_to}, sample_name: {sample_name}, user_id: {user_id}, sample_status: {sample_status}")
             cursor.execute(query, tuple(params))
             samples = cursor.fetchall()
-            
-            print(f"Found {len(samples)} sample imports (each model_data entry shown separately)")
             
             cursor.close()
             conn.close()
@@ -158,7 +229,6 @@ class SampleService:
             return samples
             
         except Exception as e:
-            print(f"Error fetching samples by date: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -236,7 +306,6 @@ class SampleService:
             return template_data
             
         except Exception as e:
-            print(f"Error fetching samples for template: {e}")
             import traceback
             traceback.print_exc()
             raise
@@ -244,7 +313,7 @@ class SampleService:
     @staticmethod
     def export_template_to_excel(sample_data, file_path):
         """
-        Export sample data to CSV template with dynamic property columns
+        Export sample data to CSV template for lab-value entry/import.
         
         Args:
             sample_data (list): List of sample dictionaries
@@ -259,35 +328,61 @@ class SampleService:
             if not sample_data:
                 return False, "No data to export"
             
-            # Collect all unique property names across all samples
-            all_properties = set()
-            for sample in sample_data:
-                for key in sample.keys():
-                    if key not in ['sample_id', 'sample_name']:
-                        all_properties.add(key)
+            # Export all known substance columns so the downloaded template can
+            # be filled and directly re-imported even when values are still blank.
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT content_name FROM content_dictionary ORDER BY id")
+            property_columns = [row['content_name'] for row in cursor.fetchall() if row.get('content_name')]
+            cursor.close()
+            conn.close()
+
+            # Fallback to columns already present in sample data if dictionary is empty.
+            if not property_columns:
+                seen_properties = []
+                seen_lookup = set()
+                for sample in sample_data:
+                    for key in sample.keys():
+                        if key in ['sample_id', 'sample_name']:
+                            continue
+                        normalized = str(key).strip().lower()
+                        if normalized and normalized not in seen_lookup:
+                            seen_lookup.add(normalized)
+                            seen_properties.append(str(key).strip())
+                property_columns = seen_properties
             
-            # Sort properties alphabetically for consistent column order
-            sorted_properties = sorted(all_properties)
-            
-            # Prepare data in required format
-            export_data = []
-            for sample in sample_data:
+            property_lookup = {str(name).strip().lower(): name for name in property_columns}
+
+            # Build row-wise layout matching the uploaded reference file:
+            # whether the new,sample ID,sample name,No.,Protein,Oil,Moisture
+            export_rows = []
+            ordered_columns = ["whether the new", "sample ID", "sample name", "No."] + property_columns
+
+            for index, sample in enumerate(sample_data, start=1):
                 row = {
-                    "sample ID": sample['sample_id'],
-                    "sample name": sample['sample_name']
+                    "whether the new": 0,
+                    "sample ID": sample.get("sample_id", ""),
+                    "sample name": sample.get("sample_name", ""),
+                    "No.": index
                 }
-                
-                # Add all properties dynamically (capitalize first letter)
-                for prop in sorted_properties:
-                    row[prop.capitalize()] = sample.get(prop, '')
-                
-                export_data.append(row)
-            
+
+                for column_name in property_columns:
+                    row[column_name] = ""
+
+                for prop_name, prop_value in sample.items():
+                    if prop_name in ["sample_id", "sample_name"]:
+                        continue
+                    matched_column = property_lookup.get(str(prop_name).strip().lower())
+                    if matched_column:
+                        row[matched_column] = prop_value
+
+                export_rows.append(row)
+
             # Create DataFrame and export to CSV
-            df = pd.DataFrame(export_data)
+            df = pd.DataFrame(export_rows, columns=ordered_columns)
             df.to_csv(file_path, index=False, encoding='utf-8-sig')
             
-            return True, f"Successfully exported {len(export_data)} sample(s)"
+            return True, f"Successfully exported {len(sample_data)} sample(s)"
             
         except Exception as e:
             return False, f"Failed to export template: {str(e)}"
@@ -381,7 +476,6 @@ class SampleService:
             
         except Exception as e:
             error_msg = str(e)
-            print(f"Error adding sample: {e}")
             import traceback
             traceback.print_exc()
             
@@ -513,7 +607,6 @@ class SampleService:
                 return False, "No sample found with the given ID"
             
         except Exception as e:
-            print(f"Error updating sample: {e}")
             import traceback
             traceback.print_exc()
             return False, f"Failed to update sample: {str(e)}"
@@ -550,7 +643,6 @@ class SampleService:
                 return False, "No spectrogram data found"
             
         except Exception as e:
-            print(f"Error checking spectral data: {e}")
             import traceback
             traceback.print_exc()
             return False, "Error checking spectral data"
@@ -588,7 +680,6 @@ class SampleService:
             return True, f"Successfully deleted {rows_deleted} sample(s)"
             
         except Exception as e:
-            print(f"Error deleting samples: {e}")
             import traceback
             traceback.print_exc()
             return False, f"Failed to delete samples: {str(e)}"
@@ -641,7 +732,6 @@ class SampleService:
             return sample
             
         except Exception as e:
-            print(f"Error fetching sample by ID: {e}")
             import traceback
             traceback.print_exc()
             return None
@@ -665,6 +755,7 @@ class SampleService:
             
             # Read CSV file
             df = pd.read_csv(file_path, encoding='utf-8-sig')
+            df = SampleService._normalize_substance_import_dataframe(df)
             
             # Normalize column names (case-insensitive)
             df.columns = df.columns.str.strip().str.lower()
@@ -771,7 +862,7 @@ class SampleService:
                     # Extract property values from CSV columns
                     properties = []
                     for col in df.columns:
-                        if col not in ['sample id', 'sample name', 'whether the new']:
+                        if col not in ['sample id', 'sample name', 'whether the new', 'no', 'no.']:
                             col_clean = col.strip().lower()
                             if col_clean in content_dict and pd.notna(row[col]):
                                 property_id = content_dict[col_clean]

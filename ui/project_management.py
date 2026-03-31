@@ -26,13 +26,59 @@ class ProjectManagementUI(QWidget):
         self._inquiry_run = False  # Track if inquiry has been run at least once
         self._build_ui()
         self._connect_signals()
+        self.load_projects(silent=True)
+
+    def _log(self, message):
+        """Keep routine terminal output quiet."""
+        return
 
     # ---------------- UI ----------------
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
+
+        self.setObjectName("projectManagementRoot")
+        self.setStyleSheet("""
+            QWidget#projectManagementRoot {
+                background-color: #f6f8fb;
+            }
+            QLabel {
+                color: #1f2937;
+                font-size: 12px;
+            }
+            QLineEdit, QComboBox, QDateEdit {
+                background-color: #ffffff;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 28px;
+            }
+            QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
+                border: 1px solid #7aa7ff;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                color: #1f2937;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 6px 12px;
+                min-height: 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #f2f6ff;
+                border-color: #aac2ef;
+            }
+            QPushButton:pressed {
+                background-color: #e7efff;
+            }
+        """)
 
         # ---------- FILTER AREA ----------
         filter_layout = QGridLayout()
+        filter_layout.setHorizontalSpacing(10)
+        filter_layout.setVerticalSpacing(8)
 
         filter_layout.addWidget(QLabel("Project name:"), 0, 0)
         self.project_name = QLineEdit()
@@ -63,7 +109,7 @@ class ProjectManagementUI(QWidget):
 
         filter_layout.addWidget(QLabel("Creation time:"), 1, 0)
 
-        self.date_from = DateEditWithToday(QDate.currentDate().addMonths(-1))
+        self.date_from = DateEditWithToday(QDate(2000, 1, 1))
         self.date_from.setDisplayFormat("dd MMMM yyyy")
 
         self.date_to = DateEditWithToday(QDate.currentDate())
@@ -77,6 +123,7 @@ class ProjectManagementUI(QWidget):
 
         # ---------- BUTTON BAR ----------
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
         self.btn_inquiry = QPushButton("Inquiry")
         self.btn_add = QPushButton("Add")
@@ -110,9 +157,33 @@ class ProjectManagementUI(QWidget):
         
         # Enable sorting
         self.project_table.setSortingEnabled(True)
+        self.project_table.setAlternatingRowColors(True)
+        self.project_table.verticalHeader().setVisible(False)
+        self.project_table.verticalHeader().setDefaultSectionSize(30)
         
         # Enable row selection
         self.project_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.project_table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fbff;
+                color: #111827;
+                border: 1px solid #d8e1eb;
+                border-radius: 6px;
+                selection-background-color: #dbeafe;
+                selection-color: #0f172a;
+                gridline-color: #e5ebf2;
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background-color: #eef3f9;
+                color: #1f2937;
+                padding: 7px 6px;
+                border: 1px solid #d8e1eb;
+                border-bottom: 1px solid #c9d6e5;
+                font-weight: bold;
+            }
+        """)
         
         # Install event filter to detect clicks on empty table space
         self.project_table.viewport().installEventFilter(self)
@@ -171,9 +242,6 @@ class ProjectManagementUI(QWidget):
             status = self.status_combo.currentText()
             user_id = self.user_id.text().strip()
             
-            print(f"Loading projects from {date_from} to {date_to}")
-            print(f"Filters - Name: {project_name}, Sample: {sample_type}, Type: {measurement_type}, Status: {status}, User: {user_id}")
-            
             # Fetch projects from database
             projects = ProjectService.get_projects_by_filters(
                 date_from=date_from,
@@ -185,8 +253,6 @@ class ProjectManagementUI(QWidget):
                 user_id=user_id if user_id else None
             )
             
-            print(f"Found {len(projects)} projects")
-            
             # Populate table
             self.populate_table(projects)
             
@@ -194,11 +260,17 @@ class ProjectManagementUI(QWidget):
             self._inquiry_run = True
             
             # Show success message only if not silent mode
-            if not silent and projects:
-                print(f"Loaded {len(projects)} projects successfully")
+            if not silent:
+                if projects:
+                    self._log(f"Loaded {len(projects)} projects successfully")
+                else:
+                    QMessageBox.information(
+                        self,
+                        "No Projects Found",
+                        f"No projects were created between {date_from} and {date_to} for the selected filters."
+                    )
             
         except Exception as e:
-            print(f"Error loading projects: {e}")
             import traceback
             traceback.print_exc()
             QMessageBox.critical(self, "Error", f"Failed to load projects: {str(e)}")
@@ -237,7 +309,6 @@ class ProjectManagementUI(QWidget):
                 self.project_table.setItem(row, col, item)
         
         self.project_table.setSortingEnabled(True)
-        print(f"Table populated with {self.project_table.rowCount()} projects")
 
     # ---------------- ACTIONS ----------------
     def open_add_dialog(self):
@@ -245,7 +316,6 @@ class ProjectManagementUI(QWidget):
         if dialog.exec():
             # Notify other tabs that projects have changed
             self.project_changed.emit()
-            print("Project added")
             # Reload projects after adding
             self.load_projects()
 
@@ -328,11 +398,9 @@ class ProjectManagementUI(QWidget):
                 success, message = ProjectService.delete_project(project_id)
                 if success:
                     success_count += 1
-                    print(f"✓ Deleted: {project_name}")
                 else:
                     failed_count += 1
                     error_messages.append(f"{project_name}: {message}")
-                    print(f"✗ Failed: {project_name} - {message}")
             
             # Show result
             if failed_count == 0:
@@ -349,5 +417,3 @@ class ProjectManagementUI(QWidget):
             self.load_projects()
             # Notify other tabs that projects have changed
             self.project_changed.emit()
-        else:
-            print("Delete cancelled")

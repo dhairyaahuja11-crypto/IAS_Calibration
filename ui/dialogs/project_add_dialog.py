@@ -133,7 +133,6 @@ class ProjectAddDialog(QDialog):
                     self.measurement_index_list.setItemWidget(item, radio)
                     self.measurement_radio_group.addButton(radio, idx)
         except Exception as e:
-            print(f"Error loading measurement indexes: {e}")
             self.measurement_index_list.clear()
             self.measurement_radio_group = QButtonGroup(self)
             self.measurement_radio_group.setExclusive(True)
@@ -200,10 +199,19 @@ class ProjectAddDialog(QDialog):
         """Save the project with all form data and selected samples"""
         # Get form data
         project_data = self.get_data()
+        project_name = project_data['project_name'].strip()
         
         # Validate inputs
-        if not project_data['project_name'].strip():
+        if not project_name:
             QMessageBox.warning(self, "Validation Error", "Please enter a project name.")
+            return
+
+        if ProjectService.project_name_exists(project_name):
+            QMessageBox.warning(
+                self,
+                "Duplicate Project Name",
+                f"Project name '{project_name}' already exists. Please enter a different project name."
+            )
             return
         
         if not self.selected_samples:
@@ -227,8 +235,6 @@ class ProjectAddDialog(QDialog):
             QMessageBox.warning(self, "Lab Value Missing", "Lab values missing")
             return
 
-        # Debug: print selected_samples before creating project
-        print("[DEBUG] selected_samples before create_project:", self.selected_samples)
         try:
             success, message, project_id = ProjectService.create_project(
                 project_data, 

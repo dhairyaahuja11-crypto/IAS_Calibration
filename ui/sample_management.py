@@ -96,9 +96,51 @@ class SampleManagementUI(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
+
+        # Visual polish only (no workflow or structure changes)
+        self.setObjectName("sampleManagementRoot")
+        self.setStyleSheet("""
+            QWidget#sampleManagementRoot {
+                background-color: #f6f8fb;
+            }
+            QLabel {
+                color: #1f2937;
+                font-size: 12px;
+            }
+            QLineEdit, QComboBox, QDateEdit {
+                background-color: #ffffff;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 28px;
+            }
+            QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
+                border: 1px solid #7aa7ff;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                color: #1f2937;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 6px 12px;
+                min-height: 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #f2f6ff;
+                border-color: #aac2ef;
+            }
+            QPushButton:pressed {
+                background-color: #e7efff;
+            }
+        """)
 
         # ---------------- FILTER AREA ----------------
         filter_layout = QGridLayout()
+        filter_layout.setHorizontalSpacing(10)
+        filter_layout.setVerticalSpacing(8)
 
         filter_layout.addWidget(QLabel("Sample name:"), 0, 0)
         self.sample_name = QLineEdit()
@@ -135,6 +177,7 @@ class SampleManagementUI(QWidget):
 
         # ---------------- BUTTON BAR ----------------
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
         self.btn_inquiry = QPushButton("Inquiry")
         self.btn_add = QPushButton("Add")
@@ -153,11 +196,21 @@ class SampleManagementUI(QWidget):
         btn_layout.addWidget(self.btn_batch_import)
 
         self.template_download = QLabel('<a href="#">template download</a>')
+        self.template_download.setObjectName("templateDownloadLink")
         self.template_download.setTextFormat(Qt.TextFormat.RichText)
         self.template_download.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextBrowserInteraction
         )
         self.template_download.setOpenExternalLinks(False)
+        self.template_download.setStyleSheet("""
+            QLabel#templateDownloadLink {
+                color: #2563eb;
+                font-weight: 600;
+                border: none;
+                background: transparent;
+                padding-left: 6px;
+            }
+        """)
 
         btn_layout.addWidget(self.template_download)
         btn_layout.addStretch()
@@ -183,13 +236,43 @@ class SampleManagementUI(QWidget):
         self.table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSortingEnabled(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.setShowGrid(True)
         
         # Adjust column widths
         header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setDefaultSectionSize(120)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(0, 30)  # Checkbox column
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)  # Sample name stretches
+        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)  # Substance content stretches
         header.setSectionResizeMode(12, QHeaderView.ResizeMode.ResizeToContents)  # Creation Time auto-resizes
+        header.setStretchLastSection(False)
+
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fbff;
+                color: #111827;
+                border: 1px solid #d8e1eb;
+                border-radius: 6px;
+                selection-background-color: #dbeafe;
+                selection-color: #0f172a;
+                gridline-color: #e5ebf2;
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background-color: #eef3f9;
+                color: #1f2937;
+                padding: 7px 6px;
+                border: 1px solid #d8e1eb;
+                border-bottom: 1px solid #c9d6e5;
+                font-weight: bold;
+            }
+        """)
         
         # Enable horizontal scrolling
         self.table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)

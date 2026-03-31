@@ -1,11 +1,12 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QFrame,
-    QDialog, QDoubleSpinBox, QMessageBox, QSpinBox
+    QDialog, QDoubleSpinBox, QMessageBox, QSpinBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 import pyqtgraph as pg
 import numpy as np
+from collections import Counter
 from services.spectral_processing_service import SpectralProcessingService
 from services.preprocessing_service import PreprocessingService
 
@@ -32,29 +33,44 @@ class PreTreatmentUI(QWidget):
 
     def _build_ui(self):
         main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
 
         # ================= LEFT CONTROL PANEL =================
-        control_panel = QVBoxLayout()
+        control_frame = QFrame()
+        control_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        control_frame.setStyleSheet(
+            "QFrame { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px; }"
+        )
+        control_frame.setMinimumWidth(300)
+        control_frame.setMaximumWidth(340)
+        control_panel = QVBoxLayout(control_frame)
+        control_panel.setContentsMargins(10, 10, 10, 10)
+        control_panel.setSpacing(8)
 
         self.reset_btn = QPushButton("reset")
+        self.reset_btn.setMinimumHeight(34)
         control_panel.addWidget(self.reset_btn)
 
-        control_panel.addSpacing(10)
+        control_panel.addSpacing(6)
 
-        control_panel.addWidget(QLabel("interception\nalgorithm:"))
+        control_panel.addWidget(QLabel("interception algorithm:"))
         self.intercept_algo = QComboBox()
+        self.intercept_algo.setMinimumHeight(34)
         self.intercept_algo.addItems(["LPG", "SPG", "Manual Selection"])
         control_panel.addWidget(self.intercept_algo)
 
-        control_panel.addSpacing(10)
+        control_panel.addSpacing(6)
 
         self.intercept_btn = QPushButton("intercept data")
+        self.intercept_btn.setMinimumHeight(34)
         control_panel.addWidget(self.intercept_btn)
 
-        control_panel.addSpacing(10)
+        control_panel.addSpacing(6)
 
         control_panel.addWidget(QLabel("pre-treatment"))
         self.pretreat_combo = QComboBox()
+        self.pretreat_combo.setMinimumHeight(34)
         self.pretreat_combo.addItems([
             "mean-centering","moving smoothing", "autoscaling",
             "SG smoothing","normalization", "detrending", "MSC",
@@ -98,20 +114,28 @@ class PreTreatmentUI(QWidget):
         self.sg_polyorder_label.hide()
         self.sg_polyorder.hide()
 
-        control_panel.addSpacing(15)
+        self.moving_window.setMinimumHeight(32)
+        self.sg_window.setMinimumHeight(32)
+        self.sg_polyorder.setMinimumHeight(32)
+
+        control_panel.addSpacing(8)
 
         self.operation_btn = QPushButton("operation")
-        self.operation_combo_btn = QPushButton("operation\ncombination")
+        self.operation_btn.setMinimumHeight(34)
+        self.operation_combo_btn = QPushButton("operation combination")
+        self.operation_combo_btn.setMinimumHeight(34)
 
         control_panel.addWidget(self.operation_btn)
         control_panel.addWidget(self.operation_combo_btn)
 
         control_panel.addStretch()
 
-        main_layout.addLayout(control_panel, 1)
+        main_layout.addWidget(control_frame, 0)
 
         # ================= RIGHT PLOTS AREA =================
         plots_layout = QGridLayout()
+        plots_layout.setHorizontalSpacing(10)
+        plots_layout.setVerticalSpacing(10)
 
         self.original_plot = self._create_plot(
             "original spectrogram",
@@ -141,7 +165,17 @@ class PreTreatmentUI(QWidget):
         )
         plots_layout.addWidget(self.std_plot, 1, 1)
 
-        main_layout.addLayout(plots_layout, 5)
+        plots_frame = QFrame()
+        plots_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        plots_frame.setStyleSheet(
+            "QFrame { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px; }"
+        )
+        plots_frame_layout = QVBoxLayout(plots_frame)
+        plots_frame_layout.setContentsMargins(10, 10, 10, 10)
+        plots_frame_layout.addLayout(plots_layout)
+        plots_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        main_layout.addWidget(plots_frame, 1)
     
     def on_pretreat_changed(self, algorithm_name):
         """Show/hide parameter inputs based on selected algorithm"""
@@ -354,6 +388,10 @@ class PreTreatmentUI(QWidget):
             self._plot_spectra(self.original_spectra, self.original_plot, "original spectrogram")
             self.treated_plot.clear()
             self.treated_plot.setTitle("spectrum after treatment")
+            self.corr_plot.clear()
+            self.corr_plot.setTitle("correlation coefficient diagram")
+            self.std_plot.clear()
+            self.std_plot.setTitle("standard deviation diagram")
             
             QMessageBox.information(self, "Reset", "Reset preprocessing algorithms.\nCropping is preserved.")
         else:
@@ -362,10 +400,6 @@ class PreTreatmentUI(QWidget):
             self.applied_algorithms = []
             self._load_initial_data()
             
-            # Clear processed plot
-            self.treated_plot.clear()
-            self.treated_plot.setTitle("spectrum after treatment")
-            
             QMessageBox.information(self, "Reset", "Reloaded data from temp_data.")
     
     def _load_initial_data(self):
@@ -373,6 +407,59 @@ class PreTreatmentUI(QWidget):
         self.current_data = SpectralProcessingService.load_latest_data()
         if self.current_data:
             self.load_cropped_data()
+        else:
+            self._clear_plots()
+
+    def _clear_plots(self):
+        """Clear all plots and restore default titles."""
+        self.original_plot.clear()
+        self.original_plot.setTitle("original spectrogram")
+        self.treated_plot.clear()
+        self.treated_plot.setTitle("spectrum after treatment")
+        self.corr_plot.clear()
+        self.corr_plot.setTitle("correlation coefficient diagram")
+        self.std_plot.clear()
+        self.std_plot.setTitle("standard deviation diagram")
+
+    def _build_loaded_title(self, samples):
+        """Create an informative title for the loaded spectra plot."""
+        sample_count = len(samples)
+        metadata = self.current_data.get('metadata', {}) if self.current_data else {}
+        data_type = str(metadata.get('data_type', '')).strip().lower()
+
+        sample_names = [
+            str(sample.get('sample_name', '')).strip()
+            for sample in samples
+            if str(sample.get('sample_name', '')).strip()
+        ]
+        unique_count = len(Counter(sample_names)) if sample_names else sample_count
+
+        if data_type == 'raw' and unique_count != sample_count:
+            return f"Loaded {sample_count} spectra ({unique_count} unique samples)"
+
+        return f"Loaded {sample_count} spectra"
+
+    def _extract_spectra_arrays(self, samples):
+        """Convert sample dictionaries into numpy arrays used by preprocessing."""
+        wavelengths = None
+        absorbance_rows = []
+
+        for sample in samples:
+            sample_wavelengths = sample.get('wavelengths', [])
+            sample_absorbances = sample.get('absorbances', [])
+
+            if not sample_wavelengths or not sample_absorbances:
+                continue
+
+            if wavelengths is None:
+                wavelengths = np.array(sample_wavelengths, dtype=float)
+
+            absorbance_rows.append(np.array(sample_absorbances, dtype=float))
+
+        if wavelengths is None or not absorbance_rows:
+            return None, None
+
+        return wavelengths, np.vstack(absorbance_rows)
     
     def _plot_spectra(self, spectra: np.ndarray, plot_widget, title: str):
         """Plot multiple spectra"""
@@ -408,13 +495,24 @@ class PreTreatmentUI(QWidget):
     def load_cropped_data(self):
         """Load and display cropped data in plots"""
         try:
-            data = SpectralProcessingService.load_latest_data()
+            data = self.current_data or SpectralProcessingService.load_latest_data()
+            self.current_data = data
+
             if not data:
+                self.original_spectra = None
+                self.processed_spectra = None
+                self.wavelengths = None
+                self._clear_plots()
                 return
             
-            # Plot the data
-            self.original_plot.clear()
             samples = data.get('samples', [])
+            wavelengths, original_spectra = self._extract_spectra_arrays(samples)
+
+            self.original_spectra = original_spectra
+            self.processed_spectra = None
+            self.wavelengths = wavelengths
+
+            self.original_plot.clear()
             
             import random
             random.seed(42)
@@ -432,7 +530,13 @@ class PreTreatmentUI(QWidget):
                         connect='all'
                     )
             
-            self.original_plot.setTitle(f"Loaded {len(samples)} spectra")
+            self.original_plot.setTitle(self._build_loaded_title(samples))
+            self.treated_plot.clear()
+            self.treated_plot.setTitle("spectrum after treatment")
+            self.corr_plot.clear()
+            self.corr_plot.setTitle("correlation coefficient diagram")
+            self.std_plot.clear()
+            self.std_plot.setTitle("standard deviation diagram")
             
         except Exception as e:
             print(f"Error loading cropped data: {e}")

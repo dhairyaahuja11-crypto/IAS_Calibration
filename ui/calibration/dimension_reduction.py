@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QRadioButton,
     QDoubleSpinBox, QSpinBox, QVBoxLayout, QHBoxLayout,
     QGroupBox, QMessageBox, QListWidget, QCheckBox, QMenu,
-    QDialog, QDialogButtonBox
+    QDialog, QDialogButtonBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCursor
@@ -25,10 +25,11 @@ class DimensionReductionUI(QWidget):
         self.excluded_indices = []  # Track excluded sample indices
         self.validation_indices = []  # Track validation set indices
         self.current_results = None
+        self.analysis_indices = []  # Original sample indices used in the current result set
         
         # Multi-select outlier removal state
         self.selection_mode = False
-        self.selected_points = []  # List of selected point indices
+        self.selected_points = []  # List of selected sample indices
         
         self._build_ui()
         self._connect_signals()
@@ -38,6 +39,7 @@ class DimensionReductionUI(QWidget):
         self.reduce_btn.clicked.connect(self.on_dimension_reduction_clicked)
         self.select_dim_btn.clicked.connect(self.on_select_dimension_clicked)
         self.display_btn.clicked.connect(self.on_display_clicked)
+        self.diagram_3d_btn.clicked.connect(self.on_3d_diagram_clicked)
         self.save_btn.clicked.connect(self.on_save_clicked)
         self.algorithm_combo.currentTextChanged.connect(self.on_algorithm_changed)
         self.select_outliers_btn.clicked.connect(self.on_select_outliers_clicked)
@@ -76,14 +78,19 @@ class DimensionReductionUI(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
 
         # ================= TOP BAR =================
         top_layout = QHBoxLayout()
+        top_layout.setSpacing(8)
 
         top_layout.addWidget(QLabel("select algorithm:"))
 
         self.algorithm_combo = QComboBox()
         self.algorithm_combo.addItems(["PCA", "PLSR"])
+        self.algorithm_combo.setMinimumWidth(90)
+        self.algorithm_combo.setMinimumHeight(34)
         top_layout.addWidget(self.algorithm_combo)
         
         # Max components input
@@ -91,6 +98,8 @@ class DimensionReductionUI(QWidget):
         self.max_components_spin = QSpinBox()
         self.max_components_spin.setRange(1, 20)
         self.max_components_spin.setValue(10)
+        self.max_components_spin.setMinimumWidth(90)
+        self.max_components_spin.setMinimumHeight(34)
         top_layout.addWidget(self.max_components_spin)
         
         # CV folds (for PLSR)
@@ -99,6 +108,8 @@ class DimensionReductionUI(QWidget):
         self.cv_spin = QSpinBox()
         self.cv_spin.setRange(2, 10)
         self.cv_spin.setValue(5)
+        self.cv_spin.setMinimumWidth(80)
+        self.cv_spin.setMinimumHeight(34)
         top_layout.addWidget(self.cv_spin)
         
         # Optimize checkbox (for PLSR)
@@ -108,7 +119,9 @@ class DimensionReductionUI(QWidget):
 
         top_layout.addStretch()
 
-        self.reduce_btn = QPushButton("dimension\nreduction")
+        self.reduce_btn = QPushButton("dimension reduction")
+        self.reduce_btn.setMinimumHeight(36)
+        self.reduce_btn.setMinimumWidth(170)
         top_layout.addWidget(self.reduce_btn)
 
         main_layout.addLayout(top_layout)
@@ -118,7 +131,9 @@ class DimensionReductionUI(QWidget):
 
         # -------- LEFT: Info Display Area --------
         self.info_list = QListWidget()
-        self.info_list.setMaximumWidth(450)
+        self.info_list.setMinimumWidth(280)
+        self.info_list.setMaximumWidth(320)
+        self.info_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         main_content.addWidget(self.info_list)
 
         # -------- RIGHT: Controls + Plot --------
@@ -127,6 +142,7 @@ class DimensionReductionUI(QWidget):
         # ===== Choose Group =====
         choose_group = QGroupBox("choose")
         choose_layout = QHBoxLayout(choose_group)
+        choose_layout.setSpacing(8)
 
         self.radio_contribution = QRadioButton("contribution rate")
         self.radio_contribution.setChecked(True)
@@ -136,7 +152,8 @@ class DimensionReductionUI(QWidget):
         self.contribution_spin.setRange(0.0, 1.0)
         self.contribution_spin.setSingleStep(0.01)
         self.contribution_spin.setValue(0.95)
-        self.contribution_spin.setFixedWidth(80)
+        self.contribution_spin.setFixedWidth(90)
+        self.contribution_spin.setMinimumHeight(32)
         choose_layout.addWidget(self.contribution_spin)
 
         self.radio_pc_num = QRadioButton("number of principal components")
@@ -145,23 +162,29 @@ class DimensionReductionUI(QWidget):
         self.pc_spin = QSpinBox()
         self.pc_spin.setRange(1, 50)
         self.pc_spin.setValue(1)
-        self.pc_spin.setFixedWidth(80)
+        self.pc_spin.setFixedWidth(90)
+        self.pc_spin.setMinimumHeight(32)
         choose_layout.addWidget(self.pc_spin)
 
         choose_layout.addStretch()
 
         self.select_dim_btn = QPushButton("select dimension")
+        self.select_dim_btn.setMinimumHeight(34)
+        self.select_dim_btn.setMinimumWidth(140)
         choose_layout.addWidget(self.select_dim_btn)
 
         right_layout.addWidget(choose_group)
 
         # ===== Axis Selection & Buttons =====
         axis_layout = QHBoxLayout()
+        axis_layout.setSpacing(8)
 
         axis_layout.addWidget(QLabel("X axis:"))
         self.x_axis_combo = QComboBox()
         self.x_axis_combo.addItems(["PC_1", "PC_2", "PC_3", "PC_4", "PC_5", "PC_6", 
                                     "PC_7", "PC_8", "PC_9", "PC_10"])
+        self.x_axis_combo.setMinimumHeight(32)
+        self.x_axis_combo.setMinimumWidth(90)
         axis_layout.addWidget(self.x_axis_combo)
 
         axis_layout.addWidget(QLabel("Y axis:"))
@@ -169,33 +192,49 @@ class DimensionReductionUI(QWidget):
         self.y_axis_combo.addItems(["PC_1", "PC_2", "PC_3", "PC_4", "PC_5", "PC_6", 
                                     "PC_7", "PC_8", "PC_9", "PC_10"])
         self.y_axis_combo.setCurrentIndex(1)  # Default to PC_2
+        self.y_axis_combo.setMinimumHeight(32)
+        self.y_axis_combo.setMinimumWidth(90)
         axis_layout.addWidget(self.y_axis_combo)
 
         axis_layout.addSpacing(20)
 
         self.display_btn = QPushButton("display")
+        self.display_btn.setMinimumHeight(34)
+        self.display_btn.setMinimumWidth(92)
         axis_layout.addWidget(self.display_btn)
 
         self.diagram_3d_btn = QPushButton("3D diagram")
+        self.diagram_3d_btn.setMinimumHeight(34)
+        self.diagram_3d_btn.setMinimumWidth(92)
         axis_layout.addWidget(self.diagram_3d_btn)
 
-        self.save_btn = QPushButton("save the score matrix")
+        self.save_btn = QPushButton("save score matrix")
+        self.save_btn.setMinimumHeight(34)
+        self.save_btn.setMinimumWidth(140)
         axis_layout.addWidget(self.save_btn)
         
         # PLSR-specific buttons (hidden by default)
         self.plot_predictions_btn = QPushButton("Plot Predictions")
+        self.plot_predictions_btn.setMinimumHeight(34)
+        self.plot_predictions_btn.setMinimumWidth(130)
         axis_layout.addWidget(self.plot_predictions_btn)
         
         self.plot_coefficients_btn = QPushButton("Plot Coefficients")
+        self.plot_coefficients_btn.setMinimumHeight(34)
+        self.plot_coefficients_btn.setMinimumWidth(130)
         axis_layout.addWidget(self.plot_coefficients_btn)
         
         self.plot_component_selection_btn = QPushButton("Plot Component Selection")
+        self.plot_component_selection_btn.setMinimumHeight(34)
+        self.plot_component_selection_btn.setMinimumWidth(170)
         axis_layout.addWidget(self.plot_component_selection_btn)
         
         axis_layout.addSpacing(30)
         
         # Multi-select outlier removal button
         self.select_outliers_btn = QPushButton("Select Outliers")
+        self.select_outliers_btn.setMinimumHeight(34)
+        self.select_outliers_btn.setMinimumWidth(130)
         self.select_outliers_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
@@ -261,12 +300,20 @@ class DimensionReductionUI(QWidget):
     
     def _perform_pca_analysis(self):
         """Perform PCA analysis"""
+        valid_mask = np.ones(self.preprocessed_data.shape[0], dtype=bool)
+        for idx in self.excluded_indices:
+            if 0 <= idx < len(valid_mask):
+                valid_mask[idx] = False
+        
+        filtered_data = self.preprocessed_data[valid_mask]
+        self.analysis_indices = np.flatnonzero(valid_mask).tolist()
+        
         n_components = min(self.max_components_spin.value(), 
-                          self.preprocessed_data.shape[0], 
-                          self.preprocessed_data.shape[1])
+                          filtered_data.shape[0], 
+                          filtered_data.shape[1])
         
         print(f"Performing PCA with {n_components} components...")
-        results = self.analyzer.perform_pca(self.preprocessed_data, n_components)
+        results = self.analyzer.perform_pca(filtered_data, n_components)
         
         self.current_results = results
         
@@ -278,7 +325,7 @@ class DimensionReductionUI(QWidget):
             self.info_list.addItem(f"PC{i+1}: {var:.2f}% (Cumulative: {cum_var:.2f}%)")
         
         # Plot scores (PC1 vs PC2 by default)
-        self._plot_pca_scores(0, 1)
+        self._plot_pca_scores(0, 1 if n_components > 1 else 0)
         
         QMessageBox.information(
             self,
@@ -301,14 +348,23 @@ class DimensionReductionUI(QWidget):
             )
             return
         
+        valid_mask = np.ones(len(self.target_values), dtype=bool)
+        for idx in self.excluded_indices:
+            if 0 <= idx < len(valid_mask):
+                valid_mask[idx] = False
+        
+        filtered_data = self.preprocessed_data[valid_mask]
+        filtered_targets = self.target_values[valid_mask]
+        self.analysis_indices = np.flatnonzero(valid_mask).tolist()
+        
         n_components = self.max_components_spin.value()
         cv_folds = self.cv_spin.value()
         optimize = self.optimize_check.isChecked()
         
         print(f"Performing PLSR with max {n_components} components, {cv_folds}-fold CV...")
         results = self.analyzer.perform_pls(
-            self.preprocessed_data, 
-            self.target_values,
+            filtered_data, 
+            filtered_targets,
             n_components=n_components,
             cv=cv_folds,
             optimize=optimize
@@ -341,20 +397,41 @@ class DimensionReductionUI(QWidget):
             return
         
         scores = self.current_results['scores']
+        n_components = scores.shape[1]
+        if pc_x >= n_components or pc_y >= n_components:
+            QMessageBox.warning(
+                self,
+                "Unavailable Component",
+                f"This PCA result only has {n_components} component(s)."
+            )
+            return
         
         self.score_plot.clear()
         self.score_plot.setTitle("PCA Score Plot")
         self.score_plot.setLabel("left", f"PC{pc_y+1}")
         self.score_plot.setLabel("bottom", f"PC{pc_x+1}")
         
-        scatter = pg.ScatterPlotItem(
-            x=scores[:, pc_x],
-            y=scores[:, pc_y],
-            size=10,
-            pen=pg.mkPen(None),
-            brush=pg.mkBrush(0, 0, 255, 120)
-        )
+        spots = []
+        for row_idx in range(scores.shape[0]):
+            sample_index = self.analysis_indices[row_idx] if row_idx < len(self.analysis_indices) else row_idx
+            sample_name = self._get_sample_name(sample_index)
+            tooltip = (
+                f"{sample_name}\n"
+                f"PC{pc_x+1}: {scores[row_idx, pc_x]:.4f}\n"
+                f"PC{pc_y+1}: {scores[row_idx, pc_y]:.4f}"
+            )
+            spots.append({
+                'pos': (scores[row_idx, pc_x], scores[row_idx, pc_y]),
+                'size': 10,
+                'pen': self._get_point_pen(sample_index),
+                'brush': self._get_point_brush(sample_index, default_color='blue'),
+                'data': {'tooltip': tooltip, 'index': sample_index}
+            })
+        
+        scatter = pg.ScatterPlotItem(spots=spots, name="PCA Scores")
+        scatter.sigClicked.connect(self._on_point_clicked)
         self.score_plot.addItem(scatter)
+        self.scatter_items = {'scores': scatter}
     
     def _plot_plsr_predictions(self, results):
         """Plot PLSR predicted vs actual with hover tooltips"""
@@ -365,7 +442,7 @@ class DimensionReductionUI(QWidget):
         
         # Prepare calibration points with tooltips (skip validation points)
         spots_cal = []
-        for i in range(len(self.target_values)):
+        for row_idx, i in enumerate(self.analysis_indices):
             # Skip validation points - they should not be displayed
             if i in self.validation_indices:
                 continue
@@ -384,10 +461,10 @@ class DimensionReductionUI(QWidget):
             tooltip = f"{sample_name}\n{property_name}: {property_val}"
             
             spots_cal.append({
-                'pos': (self.target_values[i], results['y_pred_train'][i]),
+                'pos': (self.target_values[i], results['y_pred_train'][row_idx]),
                 'size': 10,
-                'pen': pg.mkPen(None),
-                'brush': pg.mkBrush(0, 0, 255, 120),
+                'pen': self._get_point_pen(i),
+                'brush': self._get_point_brush(i, default_color='blue'),
                 'data': {'tooltip': tooltip, 'index': i}  # Store tooltip and index
             })
         
@@ -398,7 +475,7 @@ class DimensionReductionUI(QWidget):
         
         # Prepare CV points with tooltips (skip validation points)
         spots_cv = []
-        for i in range(len(self.target_values)):
+        for row_idx, i in enumerate(self.analysis_indices):
             # Skip validation points - they should not be displayed
             if i in self.validation_indices:
                 continue
@@ -416,10 +493,10 @@ class DimensionReductionUI(QWidget):
             tooltip = f"{sample_name} (CV)\n{property_name}: {property_val}"
             
             spots_cv.append({
-                'pos': (self.target_values[i], results['y_pred_cv'][i]),
+                'pos': (self.target_values[i], results['y_pred_cv'][row_idx]),
                 'size': 8,
-                'pen': pg.mkPen(None),
-                'brush': pg.mkBrush(255, 0, 0, 120),
+                'pen': self._get_point_pen(i),
+                'brush': self._get_point_brush(i, default_color='red'),
                 'data': {'tooltip': tooltip, 'index': i}
             })
         
@@ -438,11 +515,16 @@ class DimensionReductionUI(QWidget):
         self.tooltip_text.hide()
         
         # Connect mouse move signal for hover detection
+        try:
+            self.score_plot.scene().sigMouseMoved.disconnect()
+        except:
+            pass
         self.score_plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
         
         # Add 1:1 line
-        y_min = min(self.target_values.min(), results['y_pred_train'].min())
-        y_max = max(self.target_values.max(), results['y_pred_train'].max())
+        active_targets = self.target_values[self.analysis_indices]
+        y_min = min(active_targets.min(), results['y_pred_train'].min())
+        y_max = max(active_targets.max(), results['y_pred_train'].max())
         line = pg.PlotDataItem(
             [y_min, y_max], [y_min, y_max],
             pen=pg.mkPen('k', width=2, style=Qt.PenStyle.DashLine)
@@ -506,7 +588,7 @@ class DimensionReductionUI(QWidget):
         
         # If in selection mode, add/remove point from selection
         if self.selection_mode:
-            self._toggle_point_selection(point, sample_index)
+            self._toggle_point_selection(sample_index)
             return
         
         # Get sample info
@@ -519,13 +601,15 @@ class DimensionReductionUI(QWidget):
         menu.setStyleSheet("QMenu { font-size: 10pt; }")
         
         # Add options
-        validation_action = menu.addAction(f"Set '{sample_name}' as Validation")
-        invalidation_action = menu.addAction(f"Set '{sample_name}' as Invalid (Remove)")
+        validation_action = None
+        if self.algorithm_combo.currentText() == "PLSR":
+            validation_action = menu.addAction(f"Set '{sample_name}' as Validation")
+        invalidation_action = menu.addAction(f"Set '{sample_name}' as Outlier (Remove)")
         
         # Show menu and get user choice
         action = menu.exec(QCursor.pos())
         
-        if action == validation_action:
+        if validation_action is not None and action == validation_action:
             self._set_as_validation(sample_index)
         elif action == invalidation_action:
             self._set_as_invalid(sample_index)
@@ -552,16 +636,7 @@ class DimensionReductionUI(QWidget):
         
         # Refresh plot to remove validation point
         if self.current_results is not None:
-            if len(self.excluded_indices) > 0:
-                # Use exclusion plot if there are excluded points
-                valid_mask = np.ones(len(self.target_values), dtype=bool)
-                for idx in self.excluded_indices:
-                    if idx < len(valid_mask):
-                        valid_mask[idx] = False
-                self._plot_plsr_predictions_with_exclusions(self.current_results, valid_mask)
-            else:
-                # Use regular plot
-                self._plot_plsr_predictions(self.current_results)
+            self._refresh_current_plot()
     
     def _set_as_invalid(self, sample_index):
         """Mark sample as invalid and remove from analysis"""
@@ -578,7 +653,7 @@ class DimensionReductionUI(QWidget):
             self,
             "Remove Sample",
             f"Mark '{sample_name}' as invalid and exclude from analysis?\n\n"
-            f"This will remove the point and re-run the PLSR analysis.",
+            f"This will remove the point and re-run the current analysis.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
@@ -595,6 +670,14 @@ class DimensionReductionUI(QWidget):
     
     def on_select_outliers_clicked(self):
         """Toggle outlier selection mode"""
+        if self.current_results is None:
+            QMessageBox.warning(
+                self,
+                "No Plot",
+                "Run PCA or PLSR first, then select the points you want to remove."
+            )
+            return
+        
         if not self.selection_mode:
             # Enter selection mode
             self.selection_mode = True
@@ -626,18 +709,14 @@ class DimensionReductionUI(QWidget):
             # Exit selection mode and process selected points
             self._process_selected_points()
     
-    def _toggle_point_selection(self, point, sample_index):
+    def _toggle_point_selection(self, sample_index):
         """Add or remove point from selection"""
-        if sample_index in [p['index'] for p in self.selected_points]:
-            # Remove from selection
-            self.selected_points = [p for p in self.selected_points if p['index'] != sample_index]
-            # Reset point color to original
-            point.setBrush(pg.mkBrush(0, 0, 255, 120))  # Blue for calibration
+        if sample_index in self.selected_points:
+            self.selected_points = [idx for idx in self.selected_points if idx != sample_index]
         else:
-            # Add to selection
-            self.selected_points.append({'point': point, 'index': sample_index})
-            # Highlight in orange
-            point.setBrush(pg.mkBrush(255, 165, 0, 200))
+            self.selected_points.append(sample_index)
+        
+        self._refresh_current_plot()
     
     def _process_selected_points(self):
         """Show dialog and process selected outliers"""
@@ -664,12 +743,14 @@ class DimensionReductionUI(QWidget):
         layout.addWidget(desc_label)
         
         # Radio buttons for options
-        validation_radio = QRadioButton("Move to Validation Set")
-        validation_radio.setChecked(True)
-        validation_radio.setStyleSheet("font-size: 10pt; margin: 5px;")
-        layout.addWidget(validation_radio)
+        validation_radio = None
+        if self.algorithm_combo.currentText() == "PLSR":
+            validation_radio = QRadioButton("Move to Validation Set")
+            validation_radio.setStyleSheet("font-size: 10pt; margin: 5px;")
+            layout.addWidget(validation_radio)
         
-        invalid_radio = QRadioButton("Mark as Invalid (Exclude from Analysis)")
+        invalid_radio = QRadioButton("Mark as Outliers and Remove")
+        invalid_radio.setChecked(True)
         invalid_radio.setStyleSheet("font-size: 10pt; margin: 5px;")
         layout.addWidget(invalid_radio)
         
@@ -683,7 +764,7 @@ class DimensionReductionUI(QWidget):
         
         # Execute dialog
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            if validation_radio.isChecked():
+            if validation_radio is not None and validation_radio.isChecked():
                 self._batch_set_as_validation()
             else:
                 self._batch_set_as_invalid()
@@ -712,22 +793,12 @@ class DimensionReductionUI(QWidget):
         """)
         # Refresh plot to remove orange highlighting
         if self.current_results is not None:
-            algorithm = self.algorithm_combo.currentText()
-            if algorithm == "PLSR" and len(self.excluded_indices) > 0:
-                # Replot with exclusions
-                valid_mask = np.ones(len(self.target_values), dtype=bool)
-                for idx in self.excluded_indices:
-                    if idx < len(valid_mask):
-                        valid_mask[idx] = False
-                self._plot_plsr_predictions_with_exclusions(self.current_results, valid_mask)
-            elif algorithm == "PLSR":
-                self._plot_plsr_predictions(self.current_results)
+            self._refresh_current_plot()
     
     def _batch_set_as_validation(self):
         """Move all selected points to validation set"""
         added_count = 0
-        for item in self.selected_points:
-            sample_index = item['index']
+        for sample_index in self.selected_points:
             if sample_index not in self.validation_indices:
                 self.validation_indices.append(sample_index)
                 added_count += 1
@@ -741,16 +812,7 @@ class DimensionReductionUI(QWidget):
         
         # Refresh plot to remove validation points
         if self.current_results is not None:
-            if len(self.excluded_indices) > 0:
-                # Use exclusion plot if there are excluded points
-                valid_mask = np.ones(len(self.target_values), dtype=bool)
-                for idx in self.excluded_indices:
-                    if idx < len(valid_mask):
-                        valid_mask[idx] = False
-                self._plot_plsr_predictions_with_exclusions(self.current_results, valid_mask)
-            else:
-                # Use regular plot
-                self._plot_plsr_predictions(self.current_results)
+            self._refresh_current_plot()
     
     def _batch_set_as_invalid(self):
         """Mark all selected points as invalid and exclude from analysis"""
@@ -760,14 +822,13 @@ class DimensionReductionUI(QWidget):
             self,
             "Remove Samples",
             f"Mark {count} sample(s) as invalid and exclude from analysis?\n\n"
-            f"This will remove the points and re-run the PLSR analysis.",
+            f"This will remove the points and re-run the current analysis.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
             # Add all to excluded indices
-            for item in self.selected_points:
-                sample_index = item['index']
+            for sample_index in self.selected_points:
                 if sample_index not in self.excluded_indices:
                     self.excluded_indices.append(sample_index)
                 # Remove from validation if it was there
@@ -778,19 +839,19 @@ class DimensionReductionUI(QWidget):
             self._rerun_analysis_with_exclusions()
     
     def _rerun_analysis_with_exclusions(self):
-        """Re-run PLSR analysis excluding marked samples"""
-        if self.preprocessed_data is None or self.target_values is None:
+        """Re-run current analysis excluding marked samples"""
+        if self.preprocessed_data is None:
             return
         
         # Create mask for valid samples (not excluded)
-        valid_mask = np.ones(len(self.target_values), dtype=bool)
+        valid_mask = np.ones(self.preprocessed_data.shape[0], dtype=bool)
         for idx in self.excluded_indices:
-            if idx < len(valid_mask):
+            if 0 <= idx < len(valid_mask):
                 valid_mask[idx] = False
         
         # Filter data
         filtered_data = self.preprocessed_data[valid_mask]
-        filtered_targets = self.target_values[valid_mask]
+        self.analysis_indices = np.flatnonzero(valid_mask).tolist()
         
         if len(filtered_data) < 5:
             QMessageBox.warning(
@@ -801,37 +862,61 @@ class DimensionReductionUI(QWidget):
             )
             return
         
-        # Run PLSR with filtered data
+        # Re-run current algorithm with filtered data
         n_components = self.max_components_spin.value()
         cv_folds = self.cv_spin.value()
         optimize = self.optimize_check.isChecked()
+        algorithm = self.algorithm_combo.currentText()
         
         try:
-            results = self.analyzer.perform_pls(
-                filtered_data,
-                filtered_targets,
-                n_components=n_components,
-                cv=cv_folds,
-                optimize=optimize
-            )
+            if algorithm == "PCA":
+                n_components = min(n_components, filtered_data.shape[0], filtered_data.shape[1])
+                results = self.analyzer.perform_pca(filtered_data, n_components)
+            else:
+                filtered_targets = self.target_values[valid_mask]
+                results = self.analyzer.perform_pls(
+                    filtered_data,
+                    filtered_targets,
+                    n_components=n_components,
+                    cv=cv_folds,
+                    optimize=optimize
+                )
             
             self.current_results = results
             
-            # Update info list with detailed PLSR summary
             self.info_list.clear()
-            summary_text = self.analyzer.get_pls_summary()
-            for line in summary_text.split('\n'):
-                self.info_list.addItem(line)
-            
-            self.info_list.addItem("")
-            self.info_list.addItem(f"Excluded samples: {len(self.excluded_indices)}")
-            
-            # Store filtered targets for plotting
-            self._filtered_targets = filtered_targets
-            self._filtered_mask = valid_mask
-            
-            # Replot with updated data
-            self._plot_plsr_predictions_with_exclusions(results, valid_mask)
+            if algorithm == "PCA":
+                for i in range(n_components):
+                    var = results['explained_variance'][i] * 100
+                    cum_var = results['cumulative_variance'][i] * 100
+                    self.info_list.addItem(f"PC{i+1}: {var:.2f}% (Cumulative: {cum_var:.2f}%)")
+                
+                self.info_list.addItem("")
+                self.info_list.addItem(f"Excluded samples: {len(self.excluded_indices)}")
+                self._plot_pca_scores(0, 1 if n_components > 1 else 0)
+                QMessageBox.information(
+                    self,
+                    "Analysis Updated",
+                    f"PCA re-run with {len(filtered_data)} samples.\n\n"
+                    f"Excluded: {len(self.excluded_indices)} samples"
+                )
+                return
+            else:
+                summary_text = self.analyzer.get_pls_summary()
+                for line in summary_text.split('\n'):
+                    self.info_list.addItem(line)
+                
+                self.info_list.addItem("")
+                self.info_list.addItem(f"Excluded samples: {len(self.excluded_indices)}")
+                self._plot_plsr_predictions_with_exclusions(results, valid_mask)
+                QMessageBox.information(
+                    self,
+                    "Analysis Updated",
+                    f"PLSR re-run with {len(filtered_data)} samples.\n\n"
+                    f"Excluded: {len(self.excluded_indices)} samples\n"
+                    f"R2: {results['r2_cv']:.4f}"
+                )
+                return
             
             QMessageBox.information(
                 self,
@@ -853,10 +938,7 @@ class DimensionReductionUI(QWidget):
         
         # Plot only valid calibration points (skip excluded and validation)
         spots_cal = []
-        cal_idx = 0
-        for i in range(len(self.target_values)):
-            if not valid_mask[i]:
-                continue  # Skip excluded points
+        for row_idx, i in enumerate(self.analysis_indices):
             if i in self.validation_indices:
                 continue  # Skip validation points
             
@@ -872,13 +954,12 @@ class DimensionReductionUI(QWidget):
             tooltip = f"{sample_name}\n{property_name}: {property_val}"
             
             spots_cal.append({
-                'pos': (self._filtered_targets[cal_idx], results['y_pred_train'][cal_idx]),
+                'pos': (self.target_values[i], results['y_pred_train'][row_idx]),
                 'size': 10,
-                'pen': pg.mkPen(None),
-                'brush': pg.mkBrush(0, 0, 255, 120),
+                'pen': self._get_point_pen(i),
+                'brush': self._get_point_brush(i, default_color='blue'),
                 'data': {'tooltip': tooltip, 'index': i}
             })
-            cal_idx += 1
         
         scatter_cal = pg.ScatterPlotItem(spots=spots_cal, name="Calibration")
         scatter_cal.sigClicked.connect(self._on_point_clicked)
@@ -886,10 +967,7 @@ class DimensionReductionUI(QWidget):
         
         # Plot CV predictions (skip excluded and validation)
         spots_cv = []
-        cv_idx = 0
-        for i in range(len(self.target_values)):
-            if not valid_mask[i]:
-                continue  # Skip excluded points
+        for row_idx, i in enumerate(self.analysis_indices):
             if i in self.validation_indices:
                 continue  # Skip validation points
             
@@ -899,19 +977,18 @@ class DimensionReductionUI(QWidget):
                 property_name = self.sample_metadata[i].get('property_name', 'Value')
             else:
                 sample_name = f'Sample {i+1}'
-                property_val = self._filtered_targets[cv_idx]
+                property_val = self.target_values[i]
                 property_name = 'Value'
             
             tooltip = f"{sample_name} (CV)\n{property_name}: {property_val}"
             
             spots_cv.append({
-                'pos': (self._filtered_targets[cv_idx], results['y_pred_cv'][cv_idx]),
+                'pos': (self.target_values[i], results['y_pred_cv'][row_idx]),
                 'size': 8,
-                'pen': pg.mkPen(None),
-                'brush': pg.mkBrush(255, 0, 0, 120),
+                'pen': self._get_point_pen(i),
+                'brush': self._get_point_brush(i, default_color='red'),
                 'data': {'tooltip': tooltip, 'index': i}
             })
-            cv_idx += 1
         
         scatter_cv = pg.ScatterPlotItem(spots=spots_cv, name="Cross-validation")
         scatter_cv.sigClicked.connect(self._on_point_clicked)
@@ -966,8 +1043,9 @@ class DimensionReductionUI(QWidget):
         self.score_plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
         
         # Add 1:1 line
-        y_min = min(self._filtered_targets.min(), results['y_pred_train'].min())
-        y_max = max(self._filtered_targets.max(), results['y_pred_train'].max())
+        active_targets = self.target_values[self.analysis_indices]
+        y_min = min(active_targets.min(), results['y_pred_train'].min())
+        y_max = max(active_targets.max(), results['y_pred_train'].max())
         line = pg.PlotDataItem(
             [y_min, y_max], [y_min, y_max],
             pen=pg.mkPen('k', width=2, style=Qt.PenStyle.DashLine)
@@ -1026,6 +1104,75 @@ class DimensionReductionUI(QWidget):
         pc_y = int(y_text.split('_')[1]) - 1
         
         self._plot_pca_scores(pc_x, pc_y)
+    
+    def on_3d_diagram_clicked(self):
+        """Display a 3D PCA score plot when available"""
+        if self.algorithm_combo.currentText() != "PCA":
+            QMessageBox.information(self, "3D Plot", "3D plotting is available for PCA only.")
+            return
+        
+        if self.current_results is None or 'scores' not in self.current_results:
+            QMessageBox.warning(self, "3D Plot", "Run PCA first to open the 3D score plot.")
+            return
+        
+        scores = self.current_results['scores']
+        if scores.shape[1] < 3:
+            QMessageBox.information(
+                self,
+                "3D Plot",
+                "At least 3 principal components are required to display a 3D score plot."
+            )
+            return
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("PCA 3D Score Plot")
+        dialog.resize(900, 700)
+        layout = QVBoxLayout(dialog)
+        
+        try:
+            import pyqtgraph.opengl as gl
+            view = gl.GLViewWidget()
+            view.setBackgroundColor('w')
+            view.opts['distance'] = 40
+            layout.addWidget(view)
+            
+            grid = gl.GLGridItem()
+            grid.scale(2, 2, 2)
+            view.addItem(grid)
+            
+            colors = np.array([
+                [1.0, 0.65, 0.0, 0.9] if sample_index in self.selected_points else [0.0, 0.35, 0.9, 0.75]
+                for sample_index in self.analysis_indices
+            ])
+            scatter = gl.GLScatterPlotItem(pos=scores[:, :3], color=colors, size=10, pxMode=True)
+            view.addItem(scatter)
+        except Exception:
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+            
+            figure = Figure(figsize=(8, 6), tight_layout=True)
+            canvas = FigureCanvas(figure)
+            layout.addWidget(canvas)
+            
+            ax = figure.add_subplot(111, projection='3d')
+            x_vals = scores[:, 0]
+            y_vals = scores[:, 1]
+            z_vals = scores[:, 2]
+            colors = [
+                '#ff9800' if sample_index in self.selected_points else '#1565c0'
+                for sample_index in self.analysis_indices
+            ]
+            
+            ax.scatter(x_vals, y_vals, z_vals, c=colors, s=45, depthshade=True)
+            ax.set_xlabel('PC1')
+            ax.set_ylabel('PC2')
+            ax.set_zlabel('PC3')
+            ax.set_title('PCA 3D Score Plot')
+            ax.grid(True, alpha=0.3)
+            canvas.draw()
+        
+        dialog.exec()
     
     def on_save_clicked(self):
         """Save analysis results"""
@@ -1239,9 +1386,58 @@ class DimensionReductionUI(QWidget):
         self.wavelengths = wavelengths
         self.target_values = target_values
         self.sample_metadata = sample_metadata if sample_metadata else []
+        self.excluded_indices = []
+        self.validation_indices = []
+        self.current_results = None
+        self.selection_mode = False
+        self.selected_points = []
+        self.analysis_indices = list(range(spectra.shape[0]))
         
         print(f"Loaded preprocessed data: {spectra.shape[0]} samples, {spectra.shape[1]} wavelengths")
         if target_values is not None:
             print(f"Target values loaded: {len(target_values)} values")
         if sample_metadata:
             print(f"Sample metadata loaded: {len(sample_metadata)} samples")
+    
+    def _get_sample_name(self, sample_index):
+        """Return the display name for a sample"""
+        if 0 <= sample_index < len(self.sample_metadata):
+            return self.sample_metadata[sample_index].get('sample_name', f'Sample {sample_index + 1}')
+        return f'Sample {sample_index + 1}'
+    
+    def _get_point_brush(self, sample_index, default_color='blue'):
+        """Return brush for regular or selected points"""
+        if sample_index in self.selected_points:
+            return pg.mkBrush(255, 165, 0, 220)
+        
+        if default_color == 'red':
+            return pg.mkBrush(255, 0, 0, 120)
+        return pg.mkBrush(0, 0, 255, 120)
+    
+    def _get_point_pen(self, sample_index):
+        """Return pen for regular or selected points"""
+        if sample_index in self.selected_points:
+            return pg.mkPen((255, 140, 0), width=2)
+        return pg.mkPen(None)
+    
+    def _refresh_current_plot(self):
+        """Redraw the current chart so selection state stays visible"""
+        if self.current_results is None:
+            return
+        
+        algorithm = self.algorithm_combo.currentText()
+        if algorithm == "PCA" and 'scores' in self.current_results:
+            x_text = self.x_axis_combo.currentText()
+            y_text = self.y_axis_combo.currentText()
+            pc_x = int(x_text.split('_')[1]) - 1
+            pc_y = int(y_text.split('_')[1]) - 1
+            self._plot_pca_scores(pc_x, pc_y)
+        elif algorithm == "PLSR":
+            if len(self.excluded_indices) > 0:
+                valid_mask = np.ones(len(self.target_values), dtype=bool)
+                for idx in self.excluded_indices:
+                    if 0 <= idx < len(valid_mask):
+                        valid_mask[idx] = False
+                self._plot_plsr_predictions_with_exclusions(self.current_results, valid_mask)
+            else:
+                self._plot_plsr_predictions(self.current_results)

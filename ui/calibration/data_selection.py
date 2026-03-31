@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QSpinBox, QCheckBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidget, QFrame,
-    QDoubleSpinBox, QTableWidgetItem, QMessageBox
+    QDoubleSpinBox, QTableWidgetItem, QMessageBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -25,6 +25,10 @@ class DataSelectionUI(QWidget):
         self._load_projects()
         self._load_instruments()
         self._connect_signals()
+
+    def _log(self, message):
+        """Keep terminal output quiet unless debugging is needed."""
+        return
     
     def _connect_signals(self):
         """Connect UI signals"""
@@ -38,10 +42,49 @@ class DataSelectionUI(QWidget):
     def keyPressEvent(self, event):
         """Handle key press events - Escape to clear selection"""
         from PyQt6.QtCore import Qt
+        if self._handle_table_range_selection(event):
+            return
         if event.key() == Qt.Key.Key_Escape:
             self.table.clearSelection()
         else:
             super().keyPressEvent(event)
+
+    def _handle_table_range_selection(self, event):
+        """Extend selection with Ctrl+Shift+Up/Down."""
+        from PyQt6.QtCore import Qt
+
+        if not (
+            event.modifiers() == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+            and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+        ):
+            return False
+
+        row_count = self.table.rowCount()
+        if row_count == 0:
+            return True
+
+        current_row = self.table.currentRow()
+        if current_row < 0:
+            current_row = 0 if event.key() == Qt.Key.Key_Down else row_count - 1
+            self.table.selectRow(current_row)
+            self.table.setCurrentCell(current_row, 0)
+            return True
+
+        step = -1 if event.key() == Qt.Key.Key_Up else 1
+        target_row = max(0, min(row_count - 1, current_row + step))
+
+        if target_row == current_row:
+            return True
+
+        selection_model = self.table.selectionModel()
+        target_index = self.table.model().index(target_row, 0)
+        selection_model.select(
+            target_index,
+            selection_model.SelectionFlag.Select | selection_model.SelectionFlag.Rows
+        )
+        self.table.setCurrentCell(target_row, 0)
+        self.table.scrollToItem(self.table.item(target_row, 0))
+        return True
     
     def eventFilter(self, obj, event):
         """Filter events to detect clicks on empty table space"""
@@ -67,7 +110,6 @@ class DataSelectionUI(QWidget):
             return
         
         # Mark samples as calibration
-        calibration_samples = []
         for row in selected_rows:
             sample_id_item = self.table.item(row, 0)  # ID column
             if sample_id_item:
@@ -80,25 +122,11 @@ class DataSelectionUI(QWidget):
                     if item:
                         item.setBackground(pastel_green)
                 
-                # Get spectral data for plotting
-                wavelength_item = self.table.item(row, 5)  # Wavelength column
-                absorbance_item = self.table.item(row, 6)  # Absorbance column
-                if wavelength_item and absorbance_item:
-                    wavelength_text = wavelength_item.data(Qt.ItemDataRole.UserRole) or wavelength_item.text()
-                    absorbance_text = absorbance_item.data(Qt.ItemDataRole.UserRole) or absorbance_item.text()
-                    calibration_samples.append({
-                        'wavelength': wavelength_text,
-                        'absorbance': absorbance_text
-                    })
         
         # Clear selection to show the new colors immediately
         self.table.clearSelection()
         
-        # Update plot with calibration samples
-        self._plot_spectra(calibration_samples, 'calibration')
-        
-        print(f"Set {len(selected_rows)} samples as calibration")
-        print(f"Current states: {self.sample_states}")
+        self._refresh_plot_from_states()
     
     def _plot_spectra(self, samples, sample_type='calibration'):
         """Plot spectral data for given samples"""
@@ -133,7 +161,7 @@ class DataSelectionUI(QWidget):
                         )
                         successful_plots += 1
             except Exception as e:
-                print(f"Error plotting spectrum: {e}")
+                self._log(f"Error plotting spectrum: {e}")
         
         # Update title with count and configure appearance
         self.plot.setTitle(f"{successful_plots} absorbance spectrums of {sample_type} set")
@@ -167,9 +195,7 @@ class DataSelectionUI(QWidget):
         
         # Clear selection to show the new colors immediately
         self.table.clearSelection()
-        
-        print(f"Set {len(selected_rows)} samples as validation")
-        print(f"Current states: {self.sample_states}")
+        self._refresh_plot_from_states()
     
     def on_select_toggle_clicked(self):
         """Toggle between select all and select none"""
@@ -184,7 +210,12 @@ class DataSelectionUI(QWidget):
     
     def on_ok_clicked(self):
         """Handle OK button click to load project samples"""
-        project_id = self.project_cb.currentData()
+        self._load_current_project_samples()
+
+    def _load_current_project_samples(self, project_id=None, preserve_states=False):
+        """Load current project samples into the table and sample list."""
+        if project_id is None:
+            project_id = self.project_cb.currentData()
         
         if not project_id:
             from PyQt6.QtWidgets import QMessageBox
@@ -197,6 +228,7 @@ class DataSelectionUI(QWidget):
             # Store current project info
             self.current_project_id = project_id
             self.current_project_name = self.project_cb.currentText()
+            previous_states = dict(self.sample_states) if preserve_states else {}
             
             # Fetch project info to get measurement index
             project_info = DataSelectionService.get_project_info(project_id)
@@ -216,6 +248,8 @@ class DataSelectionUI(QWidget):
                 self.table.setRowCount(0)
                 self.current_project_id = None
                 self.current_project_name = None
+                self.sample_states = {}
+                self.plot.clear()
                 return
             
             # Update sample list label with UNIQUE sample names only
@@ -229,13 +263,17 @@ class DataSelectionUI(QWidget):
             
             self.sample_list_label.setText("  ".join(unique_sample_names))
             
-            # Populate table with ALL replicates FROM THIS PROJECT ONLY
             self.populate_table(samples)
-            
-            print(f"Loaded {len(samples)} samples from project: {self.current_project_name} (ID: {project_id})")
+            self.sample_states = {
+                sample_id: sample_state
+                for sample_id, sample_state in previous_states.items()
+                if self._table_contains_sample_id(sample_id)
+            }
+            self._apply_states_to_table()
+            self._refresh_plot_from_states()
         
         except Exception as e:
-            print(f"Error loading project samples: {e}")
+            self._log(f"Error loading project samples: {e}")
             import traceback
             traceback.print_exc()
             from PyQt6.QtWidgets import QMessageBox
@@ -248,7 +286,7 @@ class DataSelectionUI(QWidget):
         self.table.setRowCount(0)
         self.table.setSortingEnabled(False)
         
-        for idx, sample in enumerate(samples):
+        for sample in samples:
             row = self.table.rowCount()
             self.table.insertRow(row)
             
@@ -280,6 +318,60 @@ class DataSelectionUI(QWidget):
                 self.table.setItem(row, col, item)
         
         self.table.setSortingEnabled(True)
+
+    def _table_contains_sample_id(self, sample_id):
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and item.text() == str(sample_id):
+                return True
+        return False
+
+    def _apply_states_to_table(self):
+        """Repaint table rows using the current calibration/validation state map."""
+        default_color = QColor(Qt.GlobalColor.white)
+        alt_color = QColor("#f8fbff")
+        calibration_color = QColor(220, 255, 220)
+        validation_color = QColor(255, 230, 240)
+
+        for row in range(self.table.rowCount()):
+            sample_id_item = self.table.item(row, 0)
+            sample_id = sample_id_item.text() if sample_id_item else None
+            state = self.sample_states.get(sample_id)
+
+            if state == 'calibration':
+                row_color = calibration_color
+            elif state == 'validation':
+                row_color = validation_color
+            else:
+                row_color = alt_color if row % 2 else default_color
+
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
+                if item:
+                    item.setBackground(row_color)
+
+    def _refresh_plot_from_states(self):
+        """Rebuild the calibration graph from the current state assignments."""
+        calibration_samples = []
+
+        for row in range(self.table.rowCount()):
+            sample_id_item = self.table.item(row, 0)
+            if not sample_id_item:
+                continue
+
+            sample_id = sample_id_item.text()
+            if self.sample_states.get(sample_id) != 'calibration':
+                continue
+
+            wavelength_item = self.table.item(row, 5)
+            absorbance_item = self.table.item(row, 6)
+            if wavelength_item and absorbance_item:
+                calibration_samples.append({
+                    'wavelength': wavelength_item.data(Qt.ItemDataRole.UserRole) or wavelength_item.text(),
+                    'absorbance': absorbance_item.data(Qt.ItemDataRole.UserRole) or absorbance_item.text()
+                })
+
+        self._plot_spectra(calibration_samples, 'calibration')
 
     def on_spectral_average_clicked(self):
         """Process samples with spectral averaging and save to temp_data"""
@@ -324,13 +416,8 @@ class DataSelectionUI(QWidget):
                 f"Data saved to: {output_file}"
             )
             
-            print(f"Spectral average completed for project: {self.current_project_name}")
-            print(f"Saved to: {output_file}")
-            print(f"Original samples: {len(samples_data)}, Averaged: {len(averaged_data)}")
-            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to perform spectral averaging: {str(e)}")
-            print(f"Error in spectral averaging: {e}")
             import traceback
             traceback.print_exc()
     
@@ -374,25 +461,17 @@ class DataSelectionUI(QWidget):
                 f"Data saved to: {output_file}"
             )
             
-            print(f"Raw data saved for project: {self.current_project_name}")
-            print(f"Saved to: {output_file}")
-            print(f"Total samples: {len(samples_data)}")
-            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save data: {str(e)}")
-            print(f"Error in saving data: {e}")
             import traceback
             traceback.print_exc()
     
     def _extract_samples_from_table(self):
         """Extract all sample data from the table (only samples from current project)"""
         if not self.current_project_id:
-            print("Warning: No project selected, cannot extract samples")
             return []
             
         samples_data = []
-        
-        print(f"\nExtracting samples from project: {self.current_project_name} (ID: {self.current_project_id})")
         
         for row in range(self.table.rowCount()):
             try:
@@ -414,7 +493,6 @@ class DataSelectionUI(QWidget):
                 absorbances = [float(x.strip()) for x in absorbance_data.split(',') if x.strip()]
                 
                 if len(wavelengths) != len(absorbances) or len(wavelengths) == 0:
-                    print(f"Warning: Skipping row {row} - wavelength/absorbance mismatch")
                     continue
                 
                 # Check if sample is calibration or validation
@@ -433,10 +511,8 @@ class DataSelectionUI(QWidget):
                 })
                 
             except Exception as e:
-                print(f"Error extracting row {row}: {e}")
+                self._log(f"Error extracting row {row}: {e}")
                 continue
-        
-        print(f"Extracted {len(samples_data)} samples from project")
         return samples_data
     
     def _calculate_spectral_average(self, samples_data, tolerance=0.5):
@@ -457,12 +533,6 @@ class DataSelectionUI(QWidget):
             if name not in grouped:
                 grouped[name] = []
             grouped[name].append(sample)
-        
-        print(f"\nSpectral Averaging Summary (with wavelength matching):")
-        print(f"Total unique samples: {len(grouped)}")
-        print(f"Wavelength tolerance: {tolerance} nm")
-        for name, replicates in grouped.items():
-            print(f"  {name}: {len(replicates)} replicate(s)")
         
         # Calculate average for each group
         averaged_data = []
@@ -498,7 +568,6 @@ class DataSelectionUI(QWidget):
                 # Validate wavelength range coverage
                 if (rep_wavelengths[0] > ref_wavelengths[0] + tolerance or 
                     rep_wavelengths[-1] < ref_wavelengths[-1] - tolerance):
-                    print(f"    WARNING: Replicate {i+1} wavelength range mismatch - skipping")
                     skipped_replicates.append(i)
                     continue
                 
@@ -513,9 +582,6 @@ class DataSelectionUI(QWidget):
                     
                     # Check if within tolerance
                     if np.abs(closest_wl - ref_wl) > tolerance:
-                        print(f"    WARNING: Replicate {i+1} wavelength {ref_wl:.2f} nm "
-                              f"not matched (closest: {closest_wl:.2f} nm, "
-                              f"difference: {abs(closest_wl - ref_wl):.2f} nm) - skipping replicate")
                         all_within_tolerance = False
                         break
                     
@@ -531,10 +597,6 @@ class DataSelectionUI(QWidget):
             # Calculate mean absorbance across aligned replicates
             # Inclusive of all matched replicates [0:matched_count]
             avg_absorbances = np.mean(aligned_absorbances, axis=0)
-            
-            if skipped_replicates:
-                print(f"    Note: Used {matched_count}/{len(replicates)} replicates "
-                      f"(skipped: {skipped_replicates})")
             
             # Use first replicate's metadata
             first_rep = replicates[0]
@@ -596,10 +658,6 @@ class DataSelectionUI(QWidget):
         csv_path = temp_dir / csv_filename
         self._save_as_csv(data, csv_path, averaged)
         
-        print(f"Data saved to:")
-        print(f"  JSON: {json_path}")
-        print(f"  CSV: {csv_path}")
-        
         return json_path
     
     def _save_as_csv(self, data, csv_path, averaged):
@@ -653,8 +711,7 @@ class DataSelectionUI(QWidget):
                 project_id = project.get('project_id', '')
                 self.project_cb.addItem(project_name, project_id)
         
-        except Exception as e:
-            print(f"Error loading projects: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
     
@@ -671,8 +728,7 @@ class DataSelectionUI(QWidget):
             for instrument in instruments:
                 self.instrument_cb.addItem(instrument, instrument)
         
-        except Exception as e:
-            print(f"Error loading instruments: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
     
@@ -681,30 +737,56 @@ class DataSelectionUI(QWidget):
         self._load_projects()
         self._load_instruments()
 
+    def refresh_current_project(self):
+        """Refresh the currently loaded project so sample list and graph stay in sync."""
+        if not self.current_project_id:
+            return
+
+        index = self.project_cb.findData(self.current_project_id)
+        if index >= 0:
+            self.project_cb.setCurrentIndex(index)
+        self._load_current_project_samples(project_id=self.current_project_id, preserve_states=True)
+
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
         
         # ================= TOP ROW (Project/Instrument/Buttons + Sample List + Measurement) =================
         top_row = QHBoxLayout()
+        top_row.setSpacing(8)
         
         # --- LEFT: Project, Instrument, and Action Buttons ---
-        left_top = QVBoxLayout()
+        left_panel = QFrame()
+        left_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        left_panel.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px; }")
+        left_top = QVBoxLayout(left_panel)
+        left_top.setContentsMargins(10, 10, 10, 10)
+        left_top.setSpacing(8)
         
         project_layout = QHBoxLayout()
+        project_layout.setSpacing(8)
         project_layout.addWidget(QLabel("project:"))
         self.project_cb = QComboBox()
+        self.project_cb.setMinimumHeight(30)
+        self.project_cb.setMinimumWidth(150)
         project_layout.addWidget(self.project_cb)
         project_layout.addStretch()
         left_top.addLayout(project_layout)
         
         instrument_layout = QHBoxLayout()
+        instrument_layout.setSpacing(8)
         instrument_layout.addWidget(QLabel("instrument:"))
         self.instrument_checkbox = QCheckBox()
         instrument_layout.addWidget(self.instrument_checkbox)
         self.instrument_cb = QComboBox()
+        self.instrument_cb.setMinimumHeight(30)
+        self.instrument_cb.setMinimumWidth(110)
         instrument_layout.addWidget(self.instrument_cb)
         self.ok_btn = QPushButton("OK")
+        self.ok_btn.setMinimumHeight(30)
+        self.ok_btn.setMinimumWidth(88)
         instrument_layout.addWidget(self.ok_btn)
         instrument_layout.addStretch()
         left_top.addLayout(instrument_layout)
@@ -714,35 +796,70 @@ class DataSelectionUI(QWidget):
         self.set_calibration_btn = QPushButton("set as calibration")
         self.set_validation_btn = QPushButton("set as validation")
         self.invalidation_btn = QPushButton("invalidation")
+
+        for btn in [
+            self.select_none_btn,
+            self.set_calibration_btn,
+            self.set_validation_btn,
+            self.invalidation_btn
+        ]:
+            btn.setMinimumHeight(32)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         
         left_top.addWidget(self.select_none_btn)
         left_top.addWidget(self.set_calibration_btn)
         left_top.addWidget(self.set_validation_btn)
         left_top.addWidget(self.invalidation_btn)
-        left_top.addStretch()
+        left_top.addStretch(1)
         
-        top_row.addLayout(left_top, 2)
+        left_panel.setFixedHeight(232)
+        left_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        top_row.addWidget(left_panel, 2)
         
         # --- MIDDLE: Sample List ---
-        sample_list_layout = QVBoxLayout()
-        sample_list_layout.addWidget(QLabel("sample list:"))
+        sample_panel = QFrame()
+        sample_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        sample_panel.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px; }")
+        sample_list_layout = QVBoxLayout(sample_panel)
+        sample_list_layout.setContentsMargins(10, 10, 10, 10)
+        sample_list_layout.setSpacing(8)
+
+        sample_title = QLabel("sample list:")
+        sample_title.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        sample_list_layout.addWidget(sample_title)
         self.sample_list_label = QLabel("")
         self.sample_list_label.setWordWrap(True)
-        self.sample_list_label.setStyleSheet("background-color: white; padding: 5px; border: 1px solid #ccc;")
-        self.sample_list_label.setMinimumHeight(80)
-        sample_list_layout.addWidget(self.sample_list_label)
-        top_row.addLayout(sample_list_layout, 3)
+        self.sample_list_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.sample_list_label.setStyleSheet(
+            "background-color: #f9fbff; padding: 10px; border: 1px solid #d8e1eb; border-radius: 6px;"
+        )
+        self.sample_list_label.setMinimumHeight(0)
+        self.sample_list_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        sample_list_layout.addWidget(self.sample_list_label, 1)
+        sample_panel.setFixedHeight(232)
+        sample_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        top_row.addWidget(sample_panel, 2)
         
         # --- RIGHT: Measurement Controls ---
-        right_top = QVBoxLayout()
+        right_panel = QFrame()
+        right_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        right_panel.setStyleSheet("QFrame { background: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px; }")
+        right_top = QVBoxLayout(right_panel)
+        right_top.setContentsMargins(10, 10, 10, 10)
+        right_top.setSpacing(8)
         
         measure_frame = QFrame()
         measure_frame.setFrameStyle(QFrame.Shape.Box)
+        measure_frame.setStyleSheet("QFrame { border: 1px solid #d8e1eb; border-radius: 6px; }")
         measure_layout = QGridLayout(measure_frame)
+        measure_layout.setHorizontalSpacing(6)
+        measure_layout.setVerticalSpacing(6)
         
         measure_layout.addWidget(QLabel("measurement index:"), 0, 0)
         self.index_cb = QComboBox()
         self.index_cb.addItems(["leverage value"])
+        self.index_cb.setMinimumHeight(30)
+        self.index_cb.setMinimumWidth(130)
         measure_layout.addWidget(self.index_cb, 0, 1)
         
         measure_layout.addWidget(QLabel("Protein"), 0, 2)
@@ -752,48 +869,68 @@ class DataSelectionUI(QWidget):
         self.contrib_spin.setRange(0, 1)
         self.contrib_spin.setSingleStep(0.01)
         self.contrib_spin.setValue(0.90)
+        self.contrib_spin.setMinimumHeight(30)
+        self.contrib_spin.setMinimumWidth(110)
         measure_layout.addWidget(self.contrib_spin, 1, 1)
         
         self.invalidation_measure_btn = QPushButton("invalidation")
+        self.invalidation_measure_btn.setMinimumHeight(30)
+        self.invalidation_measure_btn.setMinimumWidth(96)
         measure_layout.addWidget(self.invalidation_measure_btn, 1, 2)
         
         self.order_cb = QComboBox()
         self.order_cb.addItems(["ascending", "descending"])
+        self.order_cb.setMinimumHeight(30)
+        self.order_cb.setMinimumWidth(110)
         measure_layout.addWidget(self.order_cb, 0, 3)
         
         measure_layout.addWidget(QLabel("each sample from"), 1, 3)
         self.from_spin = QSpinBox()
         self.from_spin.setValue(0)
         self.from_spin.setMaximum(1000)
+        self.from_spin.setMinimumHeight(30)
+        self.from_spin.setMinimumWidth(84)
         measure_layout.addWidget(self.from_spin, 1, 4)
         
         measure_layout.addWidget(QLabel("start, get"), 1, 5)
         self.count_spin = QSpinBox()
         self.count_spin.setValue(10)
         self.count_spin.setMaximum(1000)
+        self.count_spin.setMinimumHeight(30)
+        self.count_spin.setMinimumWidth(84)
         measure_layout.addWidget(self.count_spin, 1, 6)
         
         measure_layout.addWidget(QLabel("number of data"), 1, 7)
         
         self.select_data_btn = QPushButton("select data")
+        self.select_data_btn.setMinimumHeight(30)
+        self.select_data_btn.setMinimumWidth(128)
         measure_layout.addWidget(self.select_data_btn, 0, 4, 1, 2)
         
         right_top.addWidget(measure_frame)
         
         avg_layout = QHBoxLayout()
+        avg_layout.setSpacing(6)
         self.spectral_average_btn = QPushButton("spectral average")
+        self.spectral_average_btn.setMinimumHeight(30)
+        self.spectral_average_btn.setMinimumWidth(120)
         avg_layout.addWidget(self.spectral_average_btn)
         self.avg_ok_btn = QPushButton("OK")
+        self.avg_ok_btn.setMinimumHeight(30)
+        self.avg_ok_btn.setMinimumWidth(74)
         avg_layout.addWidget(self.avg_ok_btn)
         avg_layout.addStretch()
         right_top.addLayout(avg_layout)
         
-        top_row.addLayout(right_top, 3)
+        right_panel.setFixedHeight(232)
+        right_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        top_row.addWidget(right_panel, 5)
         
-        main_layout.addLayout(top_row)
+        main_layout.addLayout(top_row, 0)
         
         # ================= BOTTOM ROW (Table + Plot) =================
         bottom_row = QHBoxLayout()
+        bottom_row.setSpacing(10)
         
         # --- Table ---
         self.table = QTableWidget(0, 9)
@@ -805,6 +942,23 @@ class DataSelectionUI(QWidget):
         # Set selection behavior to select entire rows
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fbff;
+                border: 1px solid #d8e1eb;
+                border-radius: 8px;
+                gridline-color: #e5ebf2;
+            }
+            QHeaderView::section {
+                background-color: #eef3f9;
+                border: 1px solid #d8e1eb;
+                padding: 6px;
+                font-weight: 600;
+            }
+        """)
         
         # Install event filter to detect clicks on empty table space
         self.table.viewport().installEventFilter(self)
@@ -820,6 +974,7 @@ class DataSelectionUI(QWidget):
         self.plot.setTitle("60 absorbance spectrums of calibration set")
         # Enable antialiasing for smooth lines
         self.plot.setAntialiasing(True)
+        self.plot.setStyleSheet("border: 1px solid #d8e1eb; border-radius: 8px; background: #ffffff;")
         bottom_row.addWidget(self.plot, 2)
         
-        main_layout.addLayout(bottom_row)
+        main_layout.addLayout(bottom_row, 1)

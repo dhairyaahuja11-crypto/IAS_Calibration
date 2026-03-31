@@ -22,7 +22,12 @@ class SpectralProcessingService:
     @staticmethod
     def load_latest_data() -> Optional[Dict]:
         """
-        Load the most recent data from temp_data
+        Load the most appropriate recent data from temp_data.
+
+        Preference order:
+        1. Latest averaged file for the same project as the newest file.
+        2. Latest averaged file overall.
+        3. Latest JSON file overall.
         
         Returns:
             Dictionary with loaded data or None if no data found
@@ -35,12 +40,42 @@ class SpectralProcessingService:
             if not json_files:
                 print("No data files found in temp_data")
                 return None
-            
-            with open(json_files[0], 'r') as f:
-                data = json.load(f)
-            
-            print(f"Loaded data from: {json_files[0].name}")
-            return data
+
+            file_entries = []
+            for json_file in json_files:
+                try:
+                    with open(json_file, 'r') as f:
+                        data = json.load(f)
+                    metadata = data.get('metadata', {})
+                    file_entries.append({
+                        'path': json_file,
+                        'data': data,
+                        'project_name': str(metadata.get('project_name', '')).strip(),
+                        'data_type': str(metadata.get('data_type', '')).strip().lower(),
+                    })
+                except Exception as e:
+                    print(f"Error reading {json_file.name}: {e}")
+
+            if not file_entries:
+                print("No readable JSON files found in temp_data")
+                return None
+
+            newest_entry = file_entries[0]
+            newest_project = newest_entry['project_name']
+
+            if newest_project:
+                for entry in file_entries:
+                    if entry['project_name'] == newest_project and entry['data_type'] == 'averaged':
+                        print(f"Loaded averaged data from: {entry['path'].name}")
+                        return entry['data']
+
+            for entry in file_entries:
+                if entry['data_type'] == 'averaged':
+                    print(f"Loaded averaged data from: {entry['path'].name}")
+                    return entry['data']
+
+            print(f"Loaded data from: {newest_entry['path'].name}")
+            return newest_entry['data']
             
         except Exception as e:
             print(f"Error loading data from temp: {e}")

@@ -8,6 +8,10 @@ import random
 
 
 class ProjectService:
+    @staticmethod
+    def _log(message):
+        """Keep service-level terminal output quiet."""
+        return
     
     @staticmethod
     def _get_db_connection():
@@ -28,8 +32,7 @@ class ProjectService:
             cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
             cursor.close()
             return conn
-        except Exception as e:
-            print(f"Database connection error: {e}")
+        except Exception:
             return None
     
     @staticmethod
@@ -53,7 +56,6 @@ class ProjectService:
         try:
             conn = ProjectService._get_db_connection()
             if not conn:
-                print("Failed to connect to database")
                 return []
             
             cursor = conn.cursor()
@@ -73,11 +75,20 @@ class ProjectService:
                     modify_time as modification_time,
                     project_state
                 FROM project
-                WHERE DATE(create_time) BETWEEN %s AND %s
-                AND (project_state IS NULL OR project_state != 'Deleted')
+                WHERE (project_state IS NULL OR project_state != 'Deleted')
             """
             
-            params = [date_from, date_to]
+            params = []
+
+            if date_from and date_to:
+                query += " AND DATE(create_time) BETWEEN %s AND %s"
+                params.extend([date_from, date_to])
+            elif date_from:
+                query += " AND DATE(create_time) >= %s"
+                params.append(date_from)
+            elif date_to:
+                query += " AND DATE(create_time) <= %s"
+                params.append(date_to)
             
             # Add optional filters
             if status and status.lower() != 'all':
@@ -85,8 +96,16 @@ class ProjectService:
                 params.append(status)
             
             if measurement_type and measurement_type.lower() != 'all':
-                query += " AND analysis_type = %s"
-                params.append(measurement_type)
+                measurement_type_value = measurement_type.strip().lower()
+                if measurement_type_value.startswith('qual'):
+                    query += " AND analysis_type IN (%s, %s)"
+                    params.extend(['Qual', 'Qualitative'])
+                elif measurement_type_value.startswith('quan'):
+                    query += " AND analysis_type IN (%s, %s)"
+                    params.extend(['Quan', 'Quantitative'])
+                else:
+                    query += " AND analysis_type = %s"
+                    params.append(measurement_type)
             
             if project_name and project_name.strip():
                 query += " AND project_name LIKE %s"
@@ -110,11 +129,48 @@ class ProjectService:
             
             return results
             
-        except Exception as e:
-            print(f"Error fetching projects: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
             return []
+
+    @staticmethod
+    def project_name_exists(project_name, exclude_project_id=None):
+        """Check whether a non-deleted project already uses the given name."""
+        try:
+            normalized_name = (project_name or '').strip()
+            if not normalized_name:
+                return False
+
+            conn = ProjectService._get_db_connection()
+            if not conn:
+                return False
+
+            cursor = conn.cursor()
+            query = """
+                SELECT project_id
+                FROM project
+                WHERE LOWER(TRIM(project_name)) = LOWER(%s)
+                AND (project_state IS NULL OR project_state != 'Deleted')
+            """
+            params = [normalized_name]
+
+            if exclude_project_id:
+                query += " AND project_id != %s"
+                params.append(str(exclude_project_id))
+
+            query += " LIMIT 1"
+            cursor.execute(query, tuple(params))
+            result = cursor.fetchone()
+
+            cursor.close()
+            conn.close()
+            return result is not None
+
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return False
     
     @staticmethod
     def delete_project(project_id):
@@ -152,8 +208,6 @@ class ProjectService:
                     conn.rollback()
                     return False, f"Project '{project_id}' not found"
                 
-                print(f"Soft deleted project_id: {project_id} (marked as Deleted)")
-                
                 # Commit transaction
                 conn.commit()
                 cursor.close()
@@ -166,7 +220,6 @@ class ProjectService:
                 raise e
                 
         except Exception as e:
-            print(f"Error deleting project: {e}")
             import traceback
             traceback.print_exc()
             return False, f"Error deleting project: {str(e)}"
@@ -214,8 +267,7 @@ class ProjectService:
             
             return result
             
-        except Exception as e:
-            print(f"Error fetching project: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
             return None
@@ -243,37 +295,194 @@ class ProjectService:
             has_linking_table = cursor.fetchone() is not None
             
             if has_linking_table:
-                # Use linking table
-                query = """
-                    SELECT 
+                cursor.execute(
+                    """
+                        SELECT sample_id
+                        FROM project_sample
+                        WHERE project_id = %s
+                    """,
+                    (project_id,)
+                )
+                linked_rows = cursor.fetchall()
+                sample_ids = [str(row['sample_id']).strip() for row in linked_rows if row.get('sample_id')]
+
+                if not sample_ids:
+                    cursor.close()
+                    conn.close()
+                    return []
+
+                placeholders = ','.join(['%s'] * len(sample_ids))
+                query = f"""
+                    SELECT
+                        s.sample_id,
                         s.sample_id as id,
                         s.sample_name,
                         s.model_num as sample_quantity,
+                        1 as scanned_number,
+                        CONCAT_WS(', ',
+                            CASE
+                                WHEN s.property_value1 IS NOT NULL AND s.property_value1 != '0' AND s.property_value1 != ''
+                                THEN CONCAT(COALESCE(cd1.content_name, 'Substance'), ': ', s.property_value1)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value2 IS NOT NULL AND s.property_value2 != '0' AND s.property_value2 != ''
+                                THEN CONCAT(COALESCE(cd2.content_name, 'Substance'), ': ', s.property_value2)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value3 IS NOT NULL AND s.property_value3 != '0' AND s.property_value3 != ''
+                                THEN CONCAT(COALESCE(cd3.content_name, 'Substance'), ': ', s.property_value3)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value4 IS NOT NULL AND s.property_value4 != '0' AND s.property_value4 != ''
+                                THEN CONCAT(COALESCE(cd4.content_name, 'Substance'), ': ', s.property_value4)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value5 IS NOT NULL AND s.property_value5 != '0' AND s.property_value5 != ''
+                                THEN CONCAT(COALESCE(cd5.content_name, 'Substance'), ': ', s.property_value5)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value6 IS NOT NULL AND s.property_value6 != '0' AND s.property_value6 != ''
+                                THEN CONCAT(COALESCE(cd6.content_name, 'Substance'), ': ', s.property_value6)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value7 IS NOT NULL AND s.property_value7 != '0' AND s.property_value7 != ''
+                                THEN CONCAT(COALESCE(cd7.content_name, 'Substance'), ': ', s.property_value7)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value8 IS NOT NULL AND s.property_value8 != '0' AND s.property_value8 != ''
+                                THEN CONCAT(COALESCE(cd8.content_name, 'Substance'), ': ', s.property_value8)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value9 IS NOT NULL AND s.property_value9 != '0' AND s.property_value9 != ''
+                                THEN CONCAT(COALESCE(cd9.content_name, 'Substance'), ': ', s.property_value9)
+                                ELSE NULL
+                            END,
+                            CASE
+                                WHEN s.property_value10 IS NOT NULL AND s.property_value10 != '0' AND s.property_value10 != ''
+                                THEN CONCAT(COALESCE(cd10.content_name, 'Substance'), ': ', s.property_value10)
+                                ELSE NULL
+                            END
+                        ) as substance_content,
                         s.model_method as scanning_method,
-                        s.sample_state as sample_status,
-                        s.create_time as creation_time
+                        CASE
+                            WHEN s.sample_status = '0' THEN 'Not collected'
+                            WHEN s.sample_status = '1' THEN 'Collected'
+                            WHEN s.sample_status = '2' THEN 'Completed'
+                            ELSE COALESCE(s.sample_status, 'Not collected')
+                        END as sample_status,
+                        s.create_person as user_id,
+                        DATE_FORMAT(s.create_time, '%%Y-%%m-%%d %%H:%%i:%%s') as creation_time
                     FROM sample s
-                    INNER JOIN project_sample ps ON s.sample_id = ps.sample_id
-                    WHERE ps.project_id = %s
+                    LEFT JOIN content_dictionary cd1 ON CAST(s.property_name1 AS UNSIGNED) = cd1.id
+                    LEFT JOIN content_dictionary cd2 ON CAST(s.property_name2 AS UNSIGNED) = cd2.id
+                    LEFT JOIN content_dictionary cd3 ON CAST(s.property_name3 AS UNSIGNED) = cd3.id
+                    LEFT JOIN content_dictionary cd4 ON CAST(s.property_name4 AS UNSIGNED) = cd4.id
+                    LEFT JOIN content_dictionary cd5 ON CAST(s.property_name5 AS UNSIGNED) = cd5.id
+                    LEFT JOIN content_dictionary cd6 ON CAST(s.property_name6 AS UNSIGNED) = cd6.id
+                    LEFT JOIN content_dictionary cd7 ON CAST(s.property_name7 AS UNSIGNED) = cd7.id
+                    LEFT JOIN content_dictionary cd8 ON CAST(s.property_name8 AS UNSIGNED) = cd8.id
+                    LEFT JOIN content_dictionary cd9 ON CAST(s.property_name9 AS UNSIGNED) = cd9.id
+                    LEFT JOIN content_dictionary cd10 ON CAST(s.property_name10 AS UNSIGNED) = cd10.id
+                    WHERE s.sample_id IN ({placeholders})
                     AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
                     ORDER BY s.create_time DESC
                 """
+                params = tuple(sample_ids)
             else:
                 # Direct relationship
                 query = """
                     SELECT 
+                        sample_id,
                         sample_id as id,
                         sample_name,
                         model_num as sample_quantity,
+                        1 as scanned_number,
+                        CONCAT_WS(', ',
+                            CASE 
+                                WHEN property_value1 IS NOT NULL AND property_value1 != '0' AND property_value1 != '' 
+                                THEN CONCAT(COALESCE(cd1.content_name, 'Substance'), ': ', property_value1)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value2 IS NOT NULL AND property_value2 != '0' AND property_value2 != '' 
+                                THEN CONCAT(COALESCE(cd2.content_name, 'Substance'), ': ', property_value2)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value3 IS NOT NULL AND property_value3 != '0' AND property_value3 != '' 
+                                THEN CONCAT(COALESCE(cd3.content_name, 'Substance'), ': ', property_value3)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value4 IS NOT NULL AND property_value4 != '0' AND property_value4 != '' 
+                                THEN CONCAT(COALESCE(cd4.content_name, 'Substance'), ': ', property_value4)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value5 IS NOT NULL AND property_value5 != '0' AND property_value5 != '' 
+                                THEN CONCAT(COALESCE(cd5.content_name, 'Substance'), ': ', property_value5)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value6 IS NOT NULL AND property_value6 != '0' AND property_value6 != '' 
+                                THEN CONCAT(COALESCE(cd6.content_name, 'Substance'), ': ', property_value6)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value7 IS NOT NULL AND property_value7 != '0' AND property_value7 != '' 
+                                THEN CONCAT(COALESCE(cd7.content_name, 'Substance'), ': ', property_value7)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value8 IS NOT NULL AND property_value8 != '0' AND property_value8 != '' 
+                                THEN CONCAT(COALESCE(cd8.content_name, 'Substance'), ': ', property_value8)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value9 IS NOT NULL AND property_value9 != '0' AND property_value9 != '' 
+                                THEN CONCAT(COALESCE(cd9.content_name, 'Substance'), ': ', property_value9)
+                                ELSE NULL
+                            END,
+                            CASE 
+                                WHEN property_value10 IS NOT NULL AND property_value10 != '0' AND property_value10 != '' 
+                                THEN CONCAT(COALESCE(cd10.content_name, 'Substance'), ': ', property_value10)
+                                ELSE NULL
+                            END
+                        ) as substance_content,
                         model_method as scanning_method,
-                        sample_state as sample_status,
+                        CASE 
+                            WHEN sample_status = '0' THEN 'Not collected'
+                            WHEN sample_status = '1' THEN 'Collected'
+                            WHEN sample_status = '2' THEN 'Completed'
+                            ELSE COALESCE(sample_status, 'Not collected')
+                        END as sample_status,
+                        create_person as user_id,
                         create_time as creation_time
                     FROM sample
+                    LEFT JOIN content_dictionary cd1 ON CAST(property_name1 AS UNSIGNED) = cd1.id
+                    LEFT JOIN content_dictionary cd2 ON CAST(property_name2 AS UNSIGNED) = cd2.id
+                    LEFT JOIN content_dictionary cd3 ON CAST(property_name3 AS UNSIGNED) = cd3.id
+                    LEFT JOIN content_dictionary cd4 ON CAST(property_name4 AS UNSIGNED) = cd4.id
+                    LEFT JOIN content_dictionary cd5 ON CAST(property_name5 AS UNSIGNED) = cd5.id
+                    LEFT JOIN content_dictionary cd6 ON CAST(property_name6 AS UNSIGNED) = cd6.id
+                    LEFT JOIN content_dictionary cd7 ON CAST(property_name7 AS UNSIGNED) = cd7.id
+                    LEFT JOIN content_dictionary cd8 ON CAST(property_name8 AS UNSIGNED) = cd8.id
+                    LEFT JOIN content_dictionary cd9 ON CAST(property_name9 AS UNSIGNED) = cd9.id
+                    LEFT JOIN content_dictionary cd10 ON CAST(property_name10 AS UNSIGNED) = cd10.id
                     WHERE project_id = %s
                     ORDER BY create_time DESC
                 """
+                params = (project_id,)
             
-            cursor.execute(query, (project_id,))
+            cursor.execute(query, params)
             results = cursor.fetchall()
             
             cursor.close()
@@ -281,14 +490,13 @@ class ProjectService:
             
             return results
             
-        except Exception as e:
-            print(f"Error fetching project samples: {e}")
+        except Exception:
             import traceback
             traceback.print_exc()
             return []
     
     @staticmethod
-    def update_project(project_id, project_data):
+    def update_project(project_id, project_data, selected_samples=None):
         """
         Update an existing project
         
@@ -312,6 +520,9 @@ class ProjectService:
             # Prepare data
             project_name = project_data.get('project_name', '').strip()[:500]
             sample_type = project_data.get('sample_type', '')[:10]
+
+            if ProjectService.project_name_exists(project_name, exclude_project_id=project_id):
+                return False, f"Project name '{project_name}' already exists. Please use a different name."
             
             # Map measurement_type to analysis_type
             measurement_type = project_data.get('measurement_type', '')
@@ -357,6 +568,38 @@ class ProjectService:
             
             if cursor.rowcount == 0:
                 return False, f"Project '{project_id}' not found"
+
+            # Keep the project/sample links in sync with the modified selection.
+            if selected_samples is not None:
+                cursor.execute("SHOW TABLES LIKE 'project_sample'")
+                has_linking_table = cursor.fetchone() is not None
+
+                normalized_sample_ids = []
+                for sample in selected_samples:
+                    sample_id = sample.get('sample_id') if isinstance(sample, dict) else getattr(sample, 'sample_id', None)
+                    if sample_id is not None and str(sample_id).strip():
+                        normalized_sample_ids.append(str(sample_id).strip())
+
+                if has_linking_table:
+                    cursor.execute("DELETE FROM project_sample WHERE project_id = %s", (project_id,))
+                    unique_sample_ids = list(dict.fromkeys(normalized_sample_ids))
+                    if unique_sample_ids:
+                        values = [
+                            (f"{project_id}_{sample_id}", project_id, sample_id)
+                            for sample_id in unique_sample_ids
+                        ]
+                        cursor.executemany(
+                            "INSERT INTO project_sample (id, project_id, sample_id) VALUES (%s, %s, %s)",
+                            values
+                        )
+                else:
+                    cursor.execute("UPDATE sample SET project_id = NULL WHERE project_id = %s", (project_id,))
+                    unique_sample_ids = list(dict.fromkeys(normalized_sample_ids))
+                    if unique_sample_ids:
+                        cursor.executemany(
+                            "UPDATE sample SET project_id = %s WHERE sample_id = %s",
+                            [(project_id, sample_id) for sample_id in unique_sample_ids]
+                        )
             
             conn.commit()
             cursor.close()
@@ -365,7 +608,6 @@ class ProjectService:
             return True, f"Project '{project_name}' updated successfully!"
             
         except Exception as e:
-            print(f"Error updating project: {e}")
             import traceback
             traceback.print_exc()
             return False, f"Error updating project: {str(e)}"
@@ -418,11 +660,16 @@ class ProjectService:
                 else:
                     project_id = "1"
                 
-                print(f"Debug - Generated project_id: {project_id}")
                 
                 # Prepare data for database insertion
                 project_name = project_data.get('project_name', '').strip()[:500]
                 sample_type = project_data.get('sample_type', '')[:10]
+
+                if ProjectService.project_name_exists(project_name):
+                    conn.rollback()
+                    cursor.close()
+                    conn.close()
+                    return False, f"Project name '{project_name}' already exists. Please use a different name.", None
                 
                 # Map measurement_type to analysis_type
                 measurement_type = project_data.get('measurement_type', '')
@@ -486,29 +733,6 @@ class ProjectService:
                 cursor.execute("SHOW TABLES LIKE 'project_sample'")
                 has_linking_table = cursor.fetchone() is not None
                 
-                print(f"Debug - Has project_sample table: {has_linking_table}")
-                
-                if has_linking_table:
-                    # Show table structure to debug
-                    cursor.execute("SHOW CREATE TABLE project_sample")
-                    create_result = cursor.fetchone()
-                    print(f"Debug - project_sample CREATE TABLE:")
-                    for key, value in create_result.items():
-                        print(f"  {key}: {value}")
-                    
-                    cursor.execute("DESCRIBE project_sample")
-                    columns = cursor.fetchall()
-                    print(f"Debug - project_sample columns:")
-                    for col in columns:
-                        print(f"  {col}")
-                    
-                    # Check if table has an 'id' column
-                    has_id_column = any(col['Field'] == 'id' for col in columns)
-                    print(f"Debug - Has 'id' column: {has_id_column}")
-                
-                print(f"Debug - Number of samples to associate: {len(selected_samples)}")
-                print(f"Debug - First 3 samples: {selected_samples[:3] if len(selected_samples) > 0 else 'NONE'}")
-                
                 if has_linking_table:
                     # Store ALL numeric sample IDs including replicates
                     all_sample_ids = []
@@ -516,17 +740,11 @@ class ProjectService:
                         sample_id = sample.get('sample_id')
                         if sample_id and str(sample_id).strip():
                             all_sample_ids.append(str(sample_id).strip())
-                    print(f"Debug - Total samples from selection: {len(selected_samples)}")
-                    print(f"Debug - Sample IDs to store (including all replicates): {len(all_sample_ids)}")
-                    print(f"Debug - Sample IDs list: {all_sample_ids[:5]}")
                     # Bulk insert all samples
                     if all_sample_ids:
                         values = [(f"{project_id}_{sample_id}", project_id, sample_id) for sample_id in all_sample_ids]
                         sql = "INSERT INTO project_sample (id, project_id, sample_id) VALUES (%s, %s, %s)"
                         cursor.executemany(sql, values)
-                        print(f"Total samples associated (including replicates): {len(all_sample_ids)}/{len(all_sample_ids)}")
-                    else:
-                        print("No sample_ids to associate.")
                 else:
                     # Update samples directly to reference the project
                     for sample in selected_samples:

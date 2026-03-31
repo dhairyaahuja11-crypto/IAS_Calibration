@@ -15,6 +15,36 @@ class CalibrationMainUI(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        self.setObjectName("calibrationMainRoot")
+        self.setStyleSheet("""
+            QWidget#calibrationMainRoot {
+                background-color: #f6f8fb;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d8e1eb;
+                background: #ffffff;
+                border-radius: 8px;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #eef3f9;
+                border: 1px solid #d8e1eb;
+                border-bottom: none;
+                padding: 7px 12px;
+                min-width: 110px;
+                color: #1f2937;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover {
+                background: #f2f6ff;
+            }
+        """)
 
         # Sub-tabs inside Calibration
         self.tabs = QTabWidget()
@@ -24,11 +54,12 @@ class CalibrationMainUI(QWidget):
         self.data_selection_tab = DataSelectionUI()
         self.pre_treatment_tab = PreTreatmentUI()
         self.dimension_reduction_tab = DimensionReductionUI()
+        self.analysis_measure_tab = AnalysisMeasureUI()
         
         self.tabs.addTab(self.data_selection_tab, "data selection")
         self.tabs.addTab(self.pre_treatment_tab, "pre-treatment")
         self.tabs.addTab(self.dimension_reduction_tab, "dimension reduction analysis")
-        self.tabs.addTab(AnalysisMeasureUI(), "analysis and measure")
+        self.tabs.addTab(self.analysis_measure_tab, "analysis and measure")
         
         # Connect tab changes to pass data between tabs
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -42,6 +73,8 @@ class CalibrationMainUI(QWidget):
         # When switching to dimension reduction, pass preprocessed data
         if tab_name == "dimension reduction analysis":
             self._pass_data_to_dimension_reduction()
+        elif tab_name == "analysis and measure":
+            self.analysis_measure_tab.refresh_data()
     
     def _pass_data_to_dimension_reduction(self):
         """Pass preprocessed data from pre-treatment to dimension reduction"""
@@ -101,8 +134,8 @@ class CalibrationMainUI(QWidget):
                 sample_metadata
             )
             
-            print(f"Passed preprocessed data to dimension reduction")
-    
     def refresh_data(self):
         """Refresh project/instrument lists when tab becomes active"""
         self.data_selection_tab.refresh_dropdowns()
+        self.data_selection_tab.refresh_current_project()
+        self.analysis_measure_tab.refresh_data()

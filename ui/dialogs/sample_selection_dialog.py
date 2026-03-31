@@ -6,20 +6,41 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QDate
 from datetime import datetime
 from ui.custom_widgets import DateEditWithToday
+from datetime import timedelta
 
 
 
 class SampleSelectionDialog(QDialog):
-    def __init__(self, parent=None, preselected_sample_keys=None):
+    def __init__(
+        self,
+        parent=None,
+        preselected_sample_keys=None,
+        preselected_sample_ids=None,
+        preselected_samples=None
+    ):
         super().__init__(parent)
         self.setWindowTitle("sample selection")
         self.resize(1200, 700)
         self.selected_samples = []
         self.preselected_sample_keys = set(preselected_sample_keys) if preselected_sample_keys else set()
+        self.preselected_sample_ids = {
+            str(sample_id).strip() for sample_id in (preselected_sample_ids or []) if str(sample_id).strip()
+        }
+        self.preselected_samples = preselected_samples or []
         self._build_ui()
         self._connect_signals()
         # Auto-load samples when dialog opens
         self.load_samples()
+
+    def _log(self, message):
+        """Keep routine terminal output quiet."""
+        return
+
+    def keyPressEvent(self, event):
+        """Support keyboard row-range selection in the sample table."""
+        if self._handle_table_range_selection(event):
+            return
+        super().keyPressEvent(event)
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
@@ -56,6 +77,8 @@ class SampleSelectionDialog(QDialog):
 
         self.date_to = DateEditWithToday(QDate.currentDate())
         self.date_to.setDisplayFormat("d MMMM, yyyy")
+
+        self._initialize_date_range_for_preselected_samples()
         filter_group.addWidget(self.date_to, 0, 9)
 
         # Display by merged sample checkbox
@@ -129,6 +152,36 @@ class SampleSelectionDialog(QDialog):
 
         main_layout.addLayout(btn_layout)
 
+    def _initialize_date_range_for_preselected_samples(self):
+        """Expand the initial filter window so existing project samples remain visible."""
+        if not self.preselected_samples:
+            return
+
+        parsed_dates = []
+        for sample in self.preselected_samples:
+            creation_time = sample.get('creation_time', '') if isinstance(sample, dict) else ''
+            if isinstance(creation_time, bytes):
+                creation_time = creation_time.decode('utf-8')
+            creation_time = str(creation_time).strip()
+            if not creation_time:
+                continue
+
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                try:
+                    parsed_dates.append(datetime.strptime(creation_time[:19], fmt))
+                    break
+                except ValueError:
+                    continue
+
+        if not parsed_dates:
+            return
+
+        earliest = min(parsed_dates).date()
+        latest = max(parsed_dates).date()
+        self.date_from.setDate(QDate(earliest.year, earliest.month, earliest.day))
+        buffer_end = latest + timedelta(days=1)
+        self.date_to.setDate(QDate(buffer_end.year, buffer_end.month, buffer_end.day))
+
     def _connect_signals(self):
         """Connect button signals"""
         self.inquiry_btn.clicked.connect(self.load_samples)
@@ -137,6 +190,41 @@ class SampleSelectionDialog(QDialog):
         self.merge_btn.clicked.connect(self.merge_samples)
         self.cancel_merge_btn.clicked.connect(self.cancel_merge)
         self.tick_btn.clicked.connect(self.tick_all)
+
+    def _handle_table_range_selection(self, event):
+        """Extend selection with Ctrl+Shift+Up/Down."""
+        if not (
+            event.modifiers() == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+            and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+        ):
+            return False
+
+        row_count = self.sample_table.rowCount()
+        if row_count == 0:
+            return True
+
+        current_row = self.sample_table.currentRow()
+        if current_row < 0:
+            current_row = 0 if event.key() == Qt.Key.Key_Down else row_count - 1
+            self.sample_table.selectRow(current_row)
+            self.sample_table.setCurrentCell(current_row, 1)
+            return True
+
+        step = -1 if event.key() == Qt.Key.Key_Up else 1
+        target_row = max(0, min(row_count - 1, current_row + step))
+
+        if target_row == current_row:
+            return True
+
+        selection_model = self.sample_table.selectionModel()
+        target_index = self.sample_table.model().index(target_row, 1)
+        selection_model.select(
+            target_index,
+            selection_model.SelectionFlag.Select | selection_model.SelectionFlag.Rows
+        )
+        self.sample_table.setCurrentCell(target_row, 1)
+        self.sample_table.scrollToItem(self.sample_table.item(target_row, 1))
+        return True
 
     def load_samples(self):
         """Load samples based on filter criteria"""
@@ -150,8 +238,6 @@ class SampleSelectionDialog(QDialog):
             sample_status = self.sample_status_combo.currentText()
             user_id = self.user_id_edit.text().strip()
             
-            print(f"Loading samples from {date_from} to {date_to}")
-            
             # Fetch samples from database with filters
             samples = SampleService.get_samples_by_date(
                 date_from, 
@@ -160,14 +246,11 @@ class SampleSelectionDialog(QDialog):
                 user_id=user_id if user_id else None
             )
             
-            print(f"Fetched {len(samples)} samples from database")
-            
             # Apply additional filters (sample_status is not in database query)
             # Note: sample_name and user_id are now filtered at database level
             
             if sample_status != "all":
                 samples = [s for s in samples if s.get('sample_status') == sample_status]
-                print(f"After status filter: {len(samples)} samples")
             
             # Store original samples for reference
             self._original_samples = samples
@@ -235,13 +318,11 @@ class SampleSelectionDialog(QDialog):
 
     def populate_table(self, samples):
         """Populate the table with sample data"""
-        print(f"Populating table with {len(samples)} samples")
         self.sample_table.setRowCount(0)
         self.sample_table.setSortingEnabled(False)
         self.sample_table.horizontalHeader().setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
         header = self.sample_table.horizontalHeader()
-        for idx, sample in enumerate(samples):
-            print(f"Adding sample {idx}: {sample.get('sample_name', 'N/A')}")
+        for sample in samples:
             row = self.sample_table.rowCount()
             self.sample_table.insertRow(row)
             # Checkbox column
@@ -268,8 +349,14 @@ class SampleSelectionDialog(QDialog):
             # Store all replicate sample_ids for this group (for bulk association)
             sample_ids = sample.get('sample_ids', [sample_id])
             checkbox.setProperty("sample_ids", sample_ids)
-            # Preselect if in preselected_sample_keys
-            if self.preselected_sample_keys and key in self.preselected_sample_keys:
+            normalized_sample_ids = {
+                str(current_id).strip() for current_id in sample_ids if str(current_id).strip()
+            }
+            is_preselected = (
+                (self.preselected_sample_keys and key in self.preselected_sample_keys)
+                or bool(self.preselected_sample_ids.intersection(normalized_sample_ids))
+            )
+            if is_preselected:
                 checkbox.setChecked(True)
             # Data columns
             substance_content = sample.get('substance_content', '')
@@ -295,8 +382,6 @@ class SampleSelectionDialog(QDialog):
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.sample_table.setItem(row, col, item)
         self.sample_table.setSortingEnabled(True)
-        print(f"Table population complete. Row count: {self.sample_table.rowCount()}")
-
     def get_selected_samples(self):
         """Get list of selected sample IDs (includes ALL replicates)"""
         selected = []
@@ -326,7 +411,6 @@ class SampleSelectionDialog(QDialog):
     def on_ok_clicked(self):
         """Handle OK button click"""
         self.selected_samples = self.get_selected_samples()
-        print("[DEBUG] selected_samples in SampleSelectionDialog:", self.selected_samples)
         if not self.selected_samples:
             QMessageBox.warning(self, "Warning", "Please select at least one sample.")
             return

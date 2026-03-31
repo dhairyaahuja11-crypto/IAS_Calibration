@@ -14,6 +14,59 @@ class MeasurementDemoUI(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
+
+        self.setObjectName("measurementDemoRoot")
+        self.setStyleSheet("""
+            QWidget#measurementDemoRoot {
+                background-color: #f6f8fb;
+            }
+            QLabel {
+                color: #1f2937;
+                font-size: 12px;
+            }
+            QComboBox, QSpinBox {
+                background-color: #ffffff;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 28px;
+            }
+            QComboBox:focus, QSpinBox:focus {
+                border: 1px solid #7aa7ff;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                color: #1f2937;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 6px 12px;
+                min-height: 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #f2f6ff;
+                border-color: #aac2ef;
+            }
+            QPushButton:pressed {
+                background-color: #e7efff;
+            }
+            QGroupBox {
+                background-color: #ffffff;
+                border: 1px solid #d8e1eb;
+                border-radius: 8px;
+                margin-top: 10px;
+                padding-top: 10px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #374151;
+            }
+        """)
 
         # ================= MAIN SPLITTER =================
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -25,7 +78,9 @@ class MeasurementDemoUI(QWidget):
 
         self.result_area = QLabel(" ")
         self.result_area.setMinimumWidth(200)
-        self.result_area.setStyleSheet("border: 1px solid #bbb;")
+        self.result_area.setStyleSheet(
+            "background-color: #ffffff; border: 1px solid #d8e1eb; border-radius: 8px;"
+        )
         left_layout.addWidget(self.result_area)
 
         export_btn = QPushButton("results\nexport")

@@ -98,11 +98,6 @@ class ModifyProjectManagement(QWidget):
         right_panel.setStyleSheet("border: 1px solid #c0c0c0;")
         main_layout.addWidget(right_panel, 2)
 
-    # ---------- LOGIC ----------
-    def save_data(self):
-        print("Saving project:")
-        print("Project name:", self.project_name.text())
-
     def clear_inputs(self):
         self.project_name.clear()
         self.remark.clear()
@@ -242,7 +237,6 @@ class ModifyProjectDialog(QDialog):
                     self.index_list.addItem(item)
                     
         except Exception as e:
-            print(f"Error loading measurement indexes: {e}")
             for text in ["Protein", "Oil", "Moisture"]:
                 item = QListWidgetItem(text)
                 item.setCheckState(Qt.CheckState.Unchecked)
@@ -314,14 +308,43 @@ class ModifyProjectDialog(QDialog):
             for col, value in enumerate(columns):
                 item = QTableWidgetItem(value)
                 self.sample_table.setItem(row, col, item)
+
+    def _get_preselected_sample_keys(self):
+        """Build stable keys for the current project samples."""
+        keys = set()
+        for sample in self.project_samples:
+            sample_name = sample.get('sample_name', '')
+            creation_time = sample.get('creation_time', '')
+            if isinstance(sample_name, bytes):
+                sample_name = sample_name.decode('utf-8')
+            if isinstance(creation_time, bytes):
+                creation_time = creation_time.decode('utf-8')
+            if sample_name and creation_time:
+                keys.add(f"{sample_name}|{creation_time}")
+        return keys
+
+    def _get_preselected_sample_ids(self):
+        """Collect sample ids for the current project samples."""
+        sample_ids = set()
+        for sample in self.project_samples:
+            sample_id = sample.get('sample_id') or sample.get('id')
+            if isinstance(sample_id, bytes):
+                sample_id = sample_id.decode('utf-8')
+            if sample_id is not None and str(sample_id).strip():
+                sample_ids.add(str(sample_id).strip())
+        return sample_ids
     
     def open_sample_selection(self):
         """Open sample selection dialog"""
-        dialog = SampleSelectionDialog(self)
+        dialog = SampleSelectionDialog(
+            self,
+            preselected_sample_keys=self._get_preselected_sample_keys(),
+            preselected_sample_ids=self._get_preselected_sample_ids(),
+            preselected_samples=self.project_samples
+        )
         if dialog.exec():
-            # Add newly selected samples
-            new_samples = dialog.selected_samples
-            self.project_samples.extend(new_samples)
+            # Replace current selection with the latest included samples
+            self.project_samples = dialog.selected_samples
             self.populate_sample_table(self.project_samples)
     
     def save_project(self):
@@ -347,6 +370,18 @@ class ModifyProjectDialog(QDialog):
             QMessageBox.warning(self, "Validation Error", "Please enter a project name.")
             return
 
+        project_id = self.project_data.get('project_id')
+        if isinstance(project_id, bytes):
+            project_id = project_id.decode('utf-8')
+
+        if ProjectService.project_name_exists(project_data['project_name'], exclude_project_id=project_id):
+            QMessageBox.warning(
+                self,
+                "Duplicate Project Name",
+                f"Project name '{project_data['project_name']}' already exists. Please enter a different project name."
+            )
+            return
+
         if not project_data['measurement_index']:
             QMessageBox.warning(self, "Validation Error", "Please select at least one measurement index.")
             return
@@ -362,13 +397,8 @@ class ModifyProjectDialog(QDialog):
             QMessageBox.warning(self, "Lab Value Missing", "Lab values missing for one or more samples. Please ensure all samples have valid lab values before saving.")
             return
 
-        # Get project ID
-        project_id = self.project_data.get('project_id')
-        if isinstance(project_id, bytes):
-            project_id = project_id.decode('utf-8')
-
         # Update in database
-        success, message = ProjectService.update_project(project_id, project_data)
+        success, message = ProjectService.update_project(project_id, project_data, self.project_samples)
 
         if success:
             QMessageBox.information(self, "Success", message)

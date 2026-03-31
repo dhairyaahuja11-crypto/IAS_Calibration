@@ -113,10 +113,51 @@ class DataManagementUI(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
+
+        # Visual polish only: keep behavior and structure unchanged
+        self.setObjectName("dataManagementRoot")
+        self.setStyleSheet("""
+            QWidget#dataManagementRoot {
+                background-color: #f6f8fb;
+            }
+            QLabel {
+                color: #1f2937;
+                font-size: 12px;
+            }
+            QLineEdit, QComboBox, QDateEdit {
+                background-color: #ffffff;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 28px;
+            }
+            QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
+                border: 1px solid #7aa7ff;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                color: #1f2937;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 6px 12px;
+                min-height: 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #f2f6ff;
+                border-color: #aac2ef;
+            }
+            QPushButton:pressed {
+                background-color: #e7efff;
+            }
+        """)
 
         # ---------------- FILTER AREA ----------------
         filter_layout = QGridLayout()
-        filter_layout.setHorizontalSpacing(5)
+        filter_layout.setHorizontalSpacing(10)
+        filter_layout.setVerticalSpacing(8)
         filter_layout.setColumnStretch(1, 1)
         filter_layout.setColumnStretch(5, 1)
         filter_layout.setColumnStretch(7, 1)
@@ -169,6 +210,7 @@ class DataManagementUI(QWidget):
 
         # ---------------- BUTTON BAR ----------------
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
         self.btn_inquiry = QPushButton("Inquiry")
         self.btn_batch_delete = QPushButton("Batch Deletion")
@@ -212,16 +254,41 @@ class DataManagementUI(QWidget):
         
         # Disable hover effects - make selection simple click only
         self.table.setMouseTracking(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.setShowGrid(True)
+
+        header = self.table.horizontalHeader()
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.setDefaultSectionSize(120)
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(0, 34)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(10, QHeaderView.ResizeMode.ResizeToContents)
+
         self.table.setStyleSheet("""
             QTableWidget {
-                selection-background-color: palette(highlight);
-                gridline-color: #d0d0d0;
+                background-color: #ffffff;
+                alternate-background-color: #f8fbff;
+                color: #111827;
+                border: 1px solid #d8e1eb;
+                border-radius: 6px;
+                selection-background-color: #dbeafe;
+                selection-color: #0f172a;
+                gridline-color: #e5ebf2;
+                font-size: 12px;
             }
             QHeaderView::section {
-                background-color: #f0f0f0;
-                padding: 5px;
-                border: 1px solid #d0d0d0;
-                border-bottom: 2px solid #808080;
+                background-color: #eef3f9;
+                color: #1f2937;
+                padding: 7px 6px;
+                border: 1px solid #d8e1eb;
+                border-bottom: 1px solid #c9d6e5;
                 font-weight: bold;
             }
         """)
@@ -229,11 +296,40 @@ class DataManagementUI(QWidget):
         splitter.addWidget(self.table)
 
 
-        # Right side: Spectrogram display (matplotlib)
-        self.plot = PlotWidget()
-        splitter.addWidget(self.plot)
+        # Right side: Spectrogram display (matplotlib) - clean, self-explanatory panel
+        plot_panel = QWidget()
+        plot_panel.setStyleSheet("""
+            QWidget {
+                background-color: #ffffff;
+                border: 1px solid #d8e1eb;
+                border-radius: 8px;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
+            }
+        """)
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(12, 10, 12, 12)
+        plot_panel_layout.setSpacing(8)
 
-        splitter.setSizes([900, 600])
+        plot_title = QLabel("Spectrogram Viewer")
+        plot_title.setStyleSheet(
+            "font-size: 13px; font-weight: 700; color: #1f2937; border: none;"
+        )
+        plot_subtitle = QLabel("Visualize absorbance vs wavelength for selected samples")
+        plot_subtitle.setStyleSheet(
+            "font-size: 11px; color: #4b5563; border: none;"
+        )
+
+        self.plot = PlotWidget()
+
+        plot_panel_layout.addWidget(plot_title)
+        plot_panel_layout.addWidget(plot_subtitle)
+        plot_panel_layout.addWidget(self.plot)
+        splitter.addWidget(plot_panel)
+
+        splitter.setSizes([900, 620])
         main_layout.addWidget(splitter)
 
     # ---------------- SIGNALS ----------------
@@ -255,8 +351,10 @@ class DataManagementUI(QWidget):
             super().keyPressEvent(event)
     
     def on_clear_selection_clicked(self):
-        """Clear all row selections"""
+        """Clear highlighted rows and untick all checked rows."""
         self.table.clearSelection()
+        self.on_header_checkbox_changed(False)
+        self.checkbox_header.setChecked(False)
 
     def on_spectrogram_display_clicked(self):
         """Display spectra: for ticked rows from DB, or browse folder if nothing ticked."""
@@ -502,30 +600,60 @@ class DataManagementUI(QWidget):
     def on_header_checkbox_changed(self, checked):
         row_count = self.table.rowCount()
         for row_idx in range(row_count):
-            cb_widget = self.table.cellWidget(row_idx, 0)
-            if cb_widget is not None:
-                layout = cb_widget.layout()
-                if layout is not None and layout.count() > 0:
-                    checkbox = layout.itemAt(0).widget()
-                    if isinstance(checkbox, QCheckBox):
-                        checkbox.blockSignals(True)
-                        checkbox.setChecked(checked)
-                        checkbox.blockSignals(False)
+            checkbox = self._get_row_checkbox(row_idx)
+            if checkbox is not None:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(bool(checked))
+                checkbox.blockSignals(False)
 
     def on_row_checkbox_changed(self):
         row_count = self.table.rowCount()
-        all_checked = True
+        all_checked = row_count > 0
         for row_idx in range(row_count):
-            cb_widget = self.table.cellWidget(row_idx, 0)
-            if cb_widget is not None:
-                layout = cb_widget.layout()
-                if layout is not None and layout.count() > 0:
-                    checkbox = layout.itemAt(0).widget()
-                    if isinstance(checkbox, QCheckBox):
-                        if not checkbox.isChecked():
-                            all_checked = False
-                            break
+            checkbox = self._get_row_checkbox(row_idx)
+            if checkbox is None or not checkbox.isChecked():
+                all_checked = False
+                break
         self.checkbox_header.setChecked(all_checked)
+
+    def _create_checkbox_widget(self):
+        """Create a centered checkbox widget for the first column."""
+        checkbox = QCheckBox()
+        checkbox.stateChanged.connect(self.on_row_checkbox_changed)
+
+        cb_widget = QWidget()
+        cb_layout = QHBoxLayout(cb_widget)
+        cb_layout.setContentsMargins(0, 0, 0, 0)
+        cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        cb_layout.addWidget(checkbox)
+        cb_widget.setLayout(cb_layout)
+        return cb_widget
+
+    def _get_row_checkbox(self, row_idx):
+        """Return the checkbox for a row, handling both wrapped and legacy widgets."""
+        cb_widget = self.table.cellWidget(row_idx, 0)
+        if isinstance(cb_widget, QCheckBox):
+            return cb_widget
+        if cb_widget is None:
+            return None
+
+        layout = cb_widget.layout()
+        if layout is None or layout.count() == 0:
+            return None
+
+        checkbox = layout.itemAt(0).widget()
+        return checkbox if isinstance(checkbox, QCheckBox) else None
+
+    def _get_checked_row_indices(self):
+        checked_rows = []
+        for row_idx in range(self.table.rowCount()):
+            checkbox = self._get_row_checkbox(row_idx)
+            if checkbox is not None and checkbox.isChecked():
+                checked_rows.append(row_idx)
+        return checked_rows
+
+    def _get_selected_row_indices(self):
+        return sorted({row_index.row() for row_index in self.table.selectionModel().selectedRows()})
 
     def on_inquiry_clicked(self):
         """Query database and display data based on date filters."""
@@ -589,17 +717,7 @@ class DataManagementUI(QWidget):
             # Populate table with results
             for row_idx, row_data in enumerate(results):
                 self.table.insertRow(row_idx)
-                # Add checkbox in the first column (index 0)
-                from PyQt6.QtWidgets import QWidget, QHBoxLayout
-                checkbox = QCheckBox()
-                checkbox.stateChanged.connect(self.on_row_checkbox_changed)
-                cb_widget = QWidget()
-                cb_layout = QHBoxLayout(cb_widget)
-                cb_layout.setContentsMargins(0, 0, 0, 0)
-                cb_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                cb_layout.addWidget(checkbox)
-                cb_widget.setLayout(cb_layout)
-                self.table.setCellWidget(row_idx, 0, cb_widget)
+                self.table.setCellWidget(row_idx, 0, self._create_checkbox_widget())
                 # Convert ID to int if possible
                 try:
                     row_data['id'] = int(row_data['id'])
@@ -694,48 +812,40 @@ class DataManagementUI(QWidget):
         return time_str
 
     def on_tick_clicked(self):
-        """Toggle checkbox state for all selected rows."""
-        selected_rows = self.table.selectionModel().selectedRows()
+        """Check selected rows, or untick them if they are already all checked."""
+        selected_rows = self._get_selected_row_indices()
         if not selected_rows:
             QMessageBox.information(self, "Info", "Please select rows first")
             return
-        ticked_count = 0
-        unticked_count = 0
-        for row_index in selected_rows:
-            row_idx = row_index.row()
-            cb_widget = self.table.cellWidget(row_idx, 0)
-            if cb_widget is not None:
-                layout = cb_widget.layout()
-                if layout is not None and layout.count() > 0:
-                    checkbox = layout.itemAt(0).widget()
-                    if isinstance(checkbox, QCheckBox):
-                        current_state = checkbox.isChecked()
-                        checkbox.setChecked(not current_state)
-                        if not current_state:
-                            ticked_count += 1
-                        else:
-                            unticked_count += 1
-        # Clear selection after ticking
+
+        target_checked = not all(
+            self._get_row_checkbox(row_idx) is not None and self._get_row_checkbox(row_idx).isChecked()
+            for row_idx in selected_rows
+        )
+
+        changed_count = 0
+        for row_idx in selected_rows:
+            checkbox = self._get_row_checkbox(row_idx)
+            if checkbox is None:
+                continue
+            if checkbox.isChecked() != target_checked:
+                changed_count += 1
+            checkbox.setChecked(target_checked)
+
         self.table.clearSelection()
-        print(f"Toggled {len(selected_rows)} row(s): Ticked {ticked_count}, Unticked {unticked_count}")
+        self.on_row_checkbox_changed()
+        action = "Ticked" if target_checked else "Unticked"
+        print(f"{action} {changed_count} selected row(s)")
 
     def on_batch_delete_clicked(self):
-        """Delete rows from database and table - works for both selected rows AND ticked rows."""
-        ticked_rows = []
-        row_count = self.table.rowCount()
-        for row_idx in range(row_count):
-            cb_widget = self.table.cellWidget(row_idx, 0)
-            if cb_widget is not None:
-                layout = cb_widget.layout()
-                if layout is not None and layout.count() > 0:
-                    checkbox = layout.itemAt(0).widget()
-                    if isinstance(checkbox, QCheckBox):
-                        if checkbox.isChecked():
-                            ticked_rows.append(row_idx)
-        if not ticked_rows:
-            QMessageBox.information(self, "Info", "Please tick rows to delete.")
+        """Delete rows from database and table using ticked rows or current row selection."""
+        ticked_rows = self._get_checked_row_indices()
+        selected_rows = self._get_selected_row_indices()
+        rows_to_delete = ticked_rows or selected_rows
+
+        if not rows_to_delete:
+            QMessageBox.information(self, "Info", "Please tick or select rows to delete.")
             return
-        rows_to_delete = ticked_rows
         
         # Confirm deletion
         reply = QMessageBox.question(
@@ -945,11 +1055,10 @@ class DataManagementUI(QWidget):
                     self.table.insertRow(row)
                     
                     # Column 0: Checkbox
-                    checkbox = QCheckBox()
-                    self.table.setCellWidget(row, 0, checkbox)
+                    self.table.setCellWidget(row, 0, self._create_checkbox_widget())
                     
-                    # Column 1: ID (filename)
-                    self.table.setItem(row, 1, QTableWidgetItem(filename))
+                    # Column 1: ID (database sample_id)
+                    self.table.setItem(row, 1, QTableWidgetItem(str(sample_id or "")))
                     
                     # Column 2: Sample Name (use the extracted sample_name variable)
                     self.table.setItem(row, 2, QTableWidgetItem(sample_name))
@@ -1112,11 +1221,10 @@ class DataManagementUI(QWidget):
             self.table.insertRow(0)
             
             # Column 0: Checkbox
-            checkbox = QCheckBox()
-            self.table.setCellWidget(0, 0, checkbox)
+            self.table.setCellWidget(0, 0, self._create_checkbox_widget())
             
-            # Column 1: ID (filename)
-            self.table.setItem(0, 1, QTableWidgetItem(filename))
+            # Column 1: ID (database sample_id)
+            self.table.setItem(0, 1, QTableWidgetItem(str(sample_id or "")))
             
             # Column 2: Sample Name (from dialog)
             self.table.setItem(0, 2, QTableWidgetItem(sample_name))

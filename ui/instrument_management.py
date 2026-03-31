@@ -140,9 +140,50 @@ class InstrumentManagementUI(QWidget):
 
     def _build_ui(self):
         main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
+
+        self.setObjectName("instrumentManagementRoot")
+        self.setStyleSheet("""
+            QWidget#instrumentManagementRoot {
+                background-color: #f6f8fb;
+            }
+            QLabel {
+                color: #1f2937;
+                font-size: 12px;
+            }
+            QLineEdit, QComboBox, QDateEdit {
+                background-color: #ffffff;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 28px;
+            }
+            QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
+                border: 1px solid #7aa7ff;
+            }
+            QPushButton {
+                background-color: #ffffff;
+                color: #1f2937;
+                border: 1px solid #cfd8e3;
+                border-radius: 6px;
+                padding: 6px 12px;
+                min-height: 30px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: #f2f6ff;
+                border-color: #aac2ef;
+            }
+            QPushButton:pressed {
+                background-color: #e7efff;
+            }
+        """)
 
         # ---------------- FILTER AREA ----------------
         filter_layout = QGridLayout()
+        filter_layout.setHorizontalSpacing(10)
+        filter_layout.setVerticalSpacing(8)
 
         filter_layout.addWidget(QLabel("Instrument name:"), 0, 0)
         self.instrument_name_edit = QLineEdit()
@@ -175,6 +216,7 @@ class InstrumentManagementUI(QWidget):
 
         # ---------------- BUTTON BAR ----------------
         btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(8)
 
         self.inquiry_btn = QPushButton("Inquiry")
         #-------------------------------------
@@ -205,6 +247,30 @@ class InstrumentManagementUI(QWidget):
             "Serial Number", "User ID",
             "Creation Time", "Status", "Remark"
         ])
+        self.table.setAlternatingRowColors(True)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(30)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background-color: #ffffff;
+                alternate-background-color: #f8fbff;
+                color: #111827;
+                border: 1px solid #d8e1eb;
+                border-radius: 6px;
+                selection-background-color: #dbeafe;
+                selection-color: #0f172a;
+                gridline-color: #e5ebf2;
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background-color: #eef3f9;
+                color: #1f2937;
+                padding: 7px 6px;
+                border: 1px solid #d8e1eb;
+                border-bottom: 1px solid #c9d6e5;
+                font-weight: bold;
+            }
+        """)
         
         # Install event filter to detect clicks on empty table space
         self.table.viewport().installEventFilter(self)

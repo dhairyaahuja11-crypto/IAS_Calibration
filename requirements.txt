@@ -2,7 +2,7 @@
 #Python=3.14.2
 
 # GUI Framework
-PyQt6=6.10.1
+PyQt6==6.10.1
 
 # Data Processing
 pandas>=1.5.0
@@ -19,3 +19,6 @@ PyMySQL>=1.0.0
 # Scientific Computing (for calibration module if needed)
 scikit-learn>=1.2.0
 scipy>=1.10.0
+
+# to run file
+# .\.venv311\Scripts\python.exe main.py

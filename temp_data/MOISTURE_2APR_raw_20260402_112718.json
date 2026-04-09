@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "project_name": "MOISTURE_2APR",
+    "project_id": "10010",
+    "measurement_index": "Moisture",
+    "timestamp": "20260402_112718",
+    "data_type": "raw",
+    "total_samples": 435,
+    "cropped": false
+  },
+  "samples": [
+    {
+      "sample_id": "27994",
+      "sample_name": "JO-5100-13150",
+      "project_id": "10010",
+      "project_name": "MOISTURE_2APR",
+      "instrument": "(none)",
+      "serial_number": "JO-5100-13150",
+      "create_time": 

@@ -15,6 +15,7 @@ venv/
 env/
 ENV/
 .venv/
+.venv311/
 
 # IDE
 .vscode/
@@ -34,6 +35,9 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
+temp_data/
+analysis_results/
+*.agnextpro
 
 # Logs
 *.log

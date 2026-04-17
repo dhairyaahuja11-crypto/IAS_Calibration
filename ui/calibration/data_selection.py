@@ -5,16 +5,22 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
-import pyqtgraph as pg
 import os
 import json
 import numpy as np
 from datetime import datetime
 from pathlib import Path
+from ui.plot_widget import PlotWidget
 
 
 class DataSelectionUI(QWidget):
     MAX_PLOT_SPECTRA = None
+    COL_TICK = 0
+    COL_SAMPLE_ID = 1
+    COL_SAMPLE_NAME = 2
+    COL_WAVELENGTH = 6
+    COL_ABSORBANCE = 7
+    COL_PROPERTY = 9
 
     def __init__(self):
         super().__init__()
@@ -39,6 +45,7 @@ class DataSelectionUI(QWidget):
         self.select_none_btn.clicked.connect(self.on_select_toggle_clicked)
         self.set_calibration_btn.clicked.connect(self.on_set_calibration_clicked)
         self.set_validation_btn.clicked.connect(self.on_set_validation_clicked)
+        self.invalidation_btn.clicked.connect(self.on_invalidation_clicked)
         self.spectral_average_btn.clicked.connect(self.on_spectral_average_clicked)
         self.avg_ok_btn.clicked.connect(self.on_avg_ok_clicked)
     
@@ -70,7 +77,7 @@ class DataSelectionUI(QWidget):
         if current_row < 0:
             current_row = 0 if event.key() == Qt.Key.Key_Down else row_count - 1
             self.table.selectRow(current_row)
-            self.table.setCurrentCell(current_row, 0)
+            self.table.setCurrentCell(current_row, self.COL_SAMPLE_ID)
             return True
 
         step = -1 if event.key() == Qt.Key.Key_Up else 1
@@ -80,13 +87,13 @@ class DataSelectionUI(QWidget):
             return True
 
         selection_model = self.table.selectionModel()
-        target_index = self.table.model().index(target_row, 0)
+        target_index = self.table.model().index(target_row, self.COL_SAMPLE_ID)
         selection_model.select(
             target_index,
             selection_model.SelectionFlag.Select | selection_model.SelectionFlag.Rows
         )
-        self.table.setCurrentCell(target_row, 0)
-        self.table.scrollToItem(self.table.item(target_row, 0))
+        self.table.setCurrentCell(target_row, self.COL_SAMPLE_ID)
+        self.table.scrollToItem(self.table.item(target_row, self.COL_SAMPLE_ID))
         return True
     
     def eventFilter(self, obj, event):
@@ -102,40 +109,33 @@ class DataSelectionUI(QWidget):
         return super().eventFilter(obj, event)
     
     def on_set_calibration_clicked(self):
-        """Mark selected samples as calibration"""
-        selected_rows = set()
-        for item in self.table.selectedItems():
-            selected_rows.add(item.row())
-        
-        if not selected_rows:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Warning", "Please select samples first!")
+        """Mark ticked or selected samples as calibration."""
+        target_rows = self._get_target_rows()
+
+        if not target_rows:
+            QMessageBox.warning(self, "Warning", "Please tick or select samples first!")
             return
-        
-        # Mark samples as calibration
-        for row in selected_rows:
-            sample_id_item = self.table.item(row, 0)  # ID column
+
+        for row in target_rows:
+            sample_id_item = self.table.item(row, self.COL_SAMPLE_ID)
             if sample_id_item:
-                sample_id = sample_id_item.text()
-                self.sample_states[sample_id] = 'calibration'
-                # Visually indicate calibration (pastel green background)
-                pastel_green = QColor(220, 255, 220)
-                for col in range(self.table.columnCount()):
-                    item = self.table.item(row, col)
-                    if item:
-                        item.setBackground(pastel_green)
-                
-        
-        # Clear selection to show the new colors immediately
+                self.sample_states[sample_id_item.text()] = 'calibration'
+
         self.table.clearSelection()
-        
+        self._apply_states_to_table()
         self._refresh_plot_from_states()
     
     def _plot_spectra(self, samples, sample_type='calibration'):
         """Plot spectral data for given samples"""
         self.plot.clear()
+        self.plot.reset_axes(
+            title="",
+            xlabel="Wavelength (nm)",
+            ylabel="Absorbance"
+        )
         
         if not samples:
+            self.plot.draw()
             return
 
         samples_to_plot = self._sample_rows_for_plot(samples, self.MAX_PLOT_SPECTRA)
@@ -158,12 +158,8 @@ class DataSelectionUI(QWidget):
                     if len(wavelengths) == len(absorbances) and len(wavelengths) > 0:
                         # Generate random color for each spectrum
                         color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
-                        self.plot.plot(
-                            wavelengths, absorbances, 
-                            pen=pg.mkPen(color=color, width=1),
-                            antialias=True,
-                            connect='all'
-                        )
+                        normalized = tuple(channel / 255 for channel in color)
+                        self.plot.ax.plot(wavelengths, absorbances, color=normalized, linewidth=1)
                         successful_plots += 1
             except Exception as e:
                 self._log(f"Error plotting spectrum: {e}")
@@ -171,14 +167,13 @@ class DataSelectionUI(QWidget):
         # Update title with count and configure appearance
         total_count = len(samples)
         if total_count > len(samples_to_plot):
-            self.plot.setTitle(
+            self.plot.ax.set_title(
                 f"{successful_plots} of {total_count} absorbance spectrums of {sample_type} set"
             )
         else:
-            self.plot.setTitle(f"{successful_plots} absorbance spectrums of {sample_type} set")
-        self.plot.setLabel('left', 'Absorbance')
-        self.plot.setLabel('bottom', 'Wavelength (nm)')
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
+            self.plot.ax.set_title(f"{successful_plots} absorbance spectrums of {sample_type} set")
+        self.plot.ax.grid(True, alpha=0.3)
+        self.plot.draw()
 
     def _sample_rows_for_plot(self, rows, limit):
         """Reduce plot load by sampling rows evenly when the dataset is large."""
@@ -201,42 +196,46 @@ class DataSelectionUI(QWidget):
         return [rows[idx] for idx in indices]
     
     def on_set_validation_clicked(self):
-        """Mark selected samples as validation"""
-        selected_rows = set()
-        for item in self.table.selectedItems():
-            selected_rows.add(item.row())
-        
-        if not selected_rows:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Warning", "Please select samples first!")
+        """Mark ticked or selected samples as validation."""
+        target_rows = self._get_target_rows()
+
+        if not target_rows:
+            QMessageBox.warning(self, "Warning", "Please tick or select samples first!")
             return
-        
-        # Mark samples as validation
-        for row in selected_rows:
-            sample_id_item = self.table.item(row, 0)  # ID column
+
+        for row in target_rows:
+            sample_id_item = self.table.item(row, self.COL_SAMPLE_ID)
             if sample_id_item:
-                sample_id = sample_id_item.text()
-                self.sample_states[sample_id] = 'validation'
-                # Visually indicate validation (pastel pink background)
-                pastel_pink = QColor(255, 230, 240)
-                for col in range(self.table.columnCount()):
-                    item = self.table.item(row, col)
-                    if item:
-                        item.setBackground(pastel_pink)
-        
-        # Clear selection to show the new colors immediately
+                self.sample_states[sample_id_item.text()] = 'validation'
+
         self.table.clearSelection()
+        self._apply_states_to_table()
+        self._refresh_plot_from_states()
+
+    def on_invalidation_clicked(self):
+        """Clear calibration/validation assignment for ticked or selected samples."""
+        target_rows = self._get_target_rows()
+
+        if not target_rows:
+            QMessageBox.warning(self, "Warning", "Please tick or select samples first!")
+            return
+
+        for row in target_rows:
+            sample_id_item = self.table.item(row, self.COL_SAMPLE_ID)
+            if sample_id_item:
+                self.sample_states.pop(sample_id_item.text(), None)
+
+        self.table.clearSelection()
+        self._apply_states_to_table()
         self._refresh_plot_from_states()
     
     def on_select_toggle_clicked(self):
-        """Toggle between select all and select none"""
+        """Toggle all row tick boxes on or off."""
         if self.select_none_btn.text() == "select none":
-            # Deselect all rows
-            self.table.clearSelection()
+            self._set_all_row_ticks(False)
             self.select_none_btn.setText("select all")
         else:
-            # Select all rows
-            self.table.selectAll()
+            self._set_all_row_ticks(True)
             self.select_none_btn.setText("select none")
     
     def on_ok_clicked(self):
@@ -284,7 +283,7 @@ class DataSelectionUI(QWidget):
                 self.current_project_instrument = selected_instrument
             
             # Update table header with measurement index
-            self.table.setHorizontalHeaderItem(8, QTableWidgetItem(measurement_index))
+            self.table.setHorizontalHeaderItem(self.COL_PROPERTY, QTableWidgetItem(measurement_index))
             
             # Fetch samples for the project - THIS ALREADY FILTERS BY PROJECT
             samples = DataSelectionService.get_project_samples(project_id)
@@ -337,6 +336,11 @@ class DataSelectionUI(QWidget):
         for sample in samples:
             row = self.table.rowCount()
             self.table.insertRow(row)
+
+            tick_box = QCheckBox()
+            tick_box.setStyleSheet("margin-left: 12px; margin-right: 12px;")
+            tick_box.stateChanged.connect(self._sync_select_button_text)
+            self.table.setCellWidget(row, self.COL_TICK, tick_box)
             
             # Columns: ID, sample name, instrument, serial number, wavelength points,
             #          wavelength, absorbance, creation time, Protein
@@ -357,19 +361,21 @@ class DataSelectionUI(QWidget):
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 # Store full data in UserRole
-                if col == 0:
+                actual_col = col + 1
+                if actual_col == self.COL_SAMPLE_ID:
                     item.setData(Qt.ItemDataRole.UserRole, sample)
-                elif col == 5:  # Wavelength column - store full data
+                elif actual_col == self.COL_WAVELENGTH:
                     item.setData(Qt.ItemDataRole.UserRole, sample.get('wavelength', ''))
-                elif col == 6:  # Absorbance column - store full data
+                elif actual_col == self.COL_ABSORBANCE:
                     item.setData(Qt.ItemDataRole.UserRole, sample.get('absorbance', ''))
-                self.table.setItem(row, col, item)
+                self.table.setItem(row, actual_col, item)
         
         self.table.setSortingEnabled(True)
+        self._sync_select_button_text()
 
     def _table_contains_sample_id(self, sample_id):
         for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
+            item = self.table.item(row, self.COL_SAMPLE_ID)
             if item and item.text() == str(sample_id):
                 return True
         return False
@@ -382,7 +388,7 @@ class DataSelectionUI(QWidget):
         validation_color = QColor(255, 230, 240)
 
         for row in range(self.table.rowCount()):
-            sample_id_item = self.table.item(row, 0)
+            sample_id_item = self.table.item(row, self.COL_SAMPLE_ID)
             sample_id = sample_id_item.text() if sample_id_item else None
             state = self.sample_states.get(sample_id)
 
@@ -393,7 +399,7 @@ class DataSelectionUI(QWidget):
             else:
                 row_color = alt_color if row % 2 else default_color
 
-            for col in range(self.table.columnCount()):
+            for col in range(1, self.table.columnCount()):
                 item = self.table.item(row, col)
                 if item:
                     item.setBackground(row_color)
@@ -403,7 +409,7 @@ class DataSelectionUI(QWidget):
         calibration_samples = []
 
         for row in range(self.table.rowCount()):
-            sample_id_item = self.table.item(row, 0)
+            sample_id_item = self.table.item(row, self.COL_SAMPLE_ID)
             if not sample_id_item:
                 continue
 
@@ -411,8 +417,8 @@ class DataSelectionUI(QWidget):
             if self.sample_states.get(sample_id) != 'calibration':
                 continue
 
-            wavelength_item = self.table.item(row, 5)
-            absorbance_item = self.table.item(row, 6)
+            wavelength_item = self.table.item(row, self.COL_WAVELENGTH)
+            absorbance_item = self.table.item(row, self.COL_ABSORBANCE)
             if wavelength_item and absorbance_item:
                 calibration_samples.append({
                     'wavelength': wavelength_item.data(Qt.ItemDataRole.UserRole) or wavelength_item.text(),
@@ -420,6 +426,39 @@ class DataSelectionUI(QWidget):
                 })
 
         self._plot_spectra(calibration_samples, 'calibration')
+
+    def _get_row_tickbox(self, row):
+        widget = self.table.cellWidget(row, self.COL_TICK)
+        return widget if isinstance(widget, QCheckBox) else None
+
+    def _get_checked_rows(self):
+        checked_rows = []
+        for row in range(self.table.rowCount()):
+            tick_box = self._get_row_tickbox(row)
+            if tick_box and tick_box.isChecked():
+                checked_rows.append(row)
+        return checked_rows
+
+    def _get_target_rows(self):
+        checked_rows = self._get_checked_rows()
+        if checked_rows:
+            return checked_rows
+        return sorted({item.row() for item in self.table.selectedItems()})
+
+    def _set_all_row_ticks(self, checked):
+        for row in range(self.table.rowCount()):
+            tick_box = self._get_row_tickbox(row)
+            if tick_box:
+                tick_box.blockSignals(True)
+                tick_box.setChecked(checked)
+                tick_box.blockSignals(False)
+
+    def _sync_select_button_text(self, *_):
+        if self.table.rowCount() == 0:
+            self.select_none_btn.setText("select all")
+            return
+        checked_count = len(self._get_checked_rows())
+        self.select_none_btn.setText("select none" if checked_count > 0 else "select all")
 
     def on_spectral_average_clicked(self):
         """Process samples with spectral averaging and save to temp_data"""
@@ -520,11 +559,11 @@ class DataSelectionUI(QWidget):
         
         for row in range(self.table.rowCount()):
             try:
-                sample_id_item = self.table.item(row, 0)
-                sample_name_item = self.table.item(row, 1)
-                wavelength_item = self.table.item(row, 5)
-                absorbance_item = self.table.item(row, 6)
-                property_item = self.table.item(row, 8)
+                sample_id_item = self.table.item(row, self.COL_SAMPLE_ID)
+                sample_name_item = self.table.item(row, self.COL_SAMPLE_NAME)
+                wavelength_item = self.table.item(row, self.COL_WAVELENGTH)
+                absorbance_item = self.table.item(row, self.COL_ABSORBANCE)
+                property_item = self.table.item(row, self.COL_PROPERTY)
                 
                 if not all([sample_id_item, sample_name_item, wavelength_item, absorbance_item]):
                     dropped_samples.append(f"Row {row + 1}: missing table data")
@@ -642,9 +681,10 @@ class DataSelectionUI(QWidget):
         averaged_data = []
         for sample_name, replicates in grouped.items():
             resolved_sample_type = self._resolve_group_sample_type(replicates)
-            # Use the first replicate as reference
-            ref_wavelengths = np.array(replicates[0]['wavelengths'])
-            ref_absorbances = np.array(replicates[0]['absorbances'])
+            resolved_property_value = self._resolve_group_property_value(replicates)
+            # Use the first replicate as reference for single-scan groups.
+            ref_wavelengths = np.array(replicates[0]['wavelengths'], dtype=float)
+            ref_absorbances = np.array(replicates[0]['absorbances'], dtype=float)
             
             # For single replicate, no averaging needed
             if len(replicates) == 1:
@@ -653,73 +693,82 @@ class DataSelectionUI(QWidget):
                     'replicate_count': 1,
                     'wavelengths': ref_wavelengths.tolist(),
                     'absorbances': ref_absorbances.tolist(),
-                    'property_value': replicates[0]['property_value'],
+                    'property_value': resolved_property_value,
                     'sample_type': resolved_sample_type,
                     'original_sample_ids': [replicates[0]['sample_id']],
                     'wavelength_matched': False
                 })
                 continue
-            
-            # Collect absorbances aligned to reference wavelengths
-            aligned_absorbances = [ref_absorbances]
-            matched_count = 1
-            skipped_replicates = []
-            
-            # Process remaining replicates
-            for i, rep in enumerate(replicates[1:], start=1):
-                rep_wavelengths = np.array(rep['wavelengths'])
-                rep_absorbances = np.array(rep['absorbances'])
-                
-                # Validate wavelength range coverage
-                if (rep_wavelengths[0] > ref_wavelengths[0] + tolerance or 
-                    rep_wavelengths[-1] < ref_wavelengths[-1] - tolerance):
-                    skipped_replicates.append(i)
-                    continue
-                
-                # Align this replicate's absorbances to reference wavelengths
-                aligned_abs = np.zeros_like(ref_absorbances)
-                all_within_tolerance = True
-                
-                for j, ref_wl in enumerate(ref_wavelengths):
-                    # Find closest wavelength index using np.argmin(np.abs(...))
-                    closest_idx = np.argmin(np.abs(rep_wavelengths - ref_wl))
-                    closest_wl = rep_wavelengths[closest_idx]
-                    
-                    # Check if within tolerance
-                    if np.abs(closest_wl - ref_wl) > tolerance:
-                        all_within_tolerance = False
-                        break
-                    
-                    # Use the matched absorbance value
-                    aligned_abs[j] = rep_absorbances[closest_idx]
-                
-                if all_within_tolerance:
-                    aligned_absorbances.append(aligned_abs)
-                    matched_count += 1
-                else:
-                    skipped_replicates.append(i)
-            
-            # Calculate mean absorbance across aligned replicates
-            # Inclusive of all matched replicates [0:matched_count]
-            avg_absorbances = np.mean(aligned_absorbances, axis=0)
-            
-            # Use first replicate's metadata
-            first_rep = replicates[0]
+            # Align all replicate scans to one wavelength grid and average all scans.
+            # Keep tolerance argument for compatibility, but interpolation now ensures
+            # every scan contributes to the final averaged spectrum.
+            avg_wavelengths, avg_absorbances = self._average_all_replicate_scans(replicates)
             
             averaged_data.append({
                 'sample_name': sample_name,
                 'replicate_count': len(replicates),
-                'matched_count': matched_count,
-                'wavelengths': ref_wavelengths.tolist(),
+                'matched_count': len(replicates),
+                'wavelengths': avg_wavelengths.tolist(),
                 'absorbances': avg_absorbances.tolist(),
-                'property_value': first_rep['property_value'],
+                'property_value': resolved_property_value,
                 'sample_type': resolved_sample_type,
                 'original_sample_ids': [rep['sample_id'] for rep in replicates],
                 'wavelength_matched': True,
-                'skipped_replicates': skipped_replicates
+                'skipped_replicates': []
             })
         
         return averaged_data
+
+    def _average_all_replicate_scans(self, replicates):
+        """Average absorbance across all scans for a sample using interpolation."""
+        series = []
+        for rep in replicates:
+            wl = np.array(rep.get('wavelengths', []), dtype=float)
+            ab = np.array(rep.get('absorbances', []), dtype=float)
+            if wl.size == 0 or ab.size == 0 or wl.size != ab.size:
+                continue
+
+            sort_idx = np.argsort(wl)
+            wl = wl[sort_idx]
+            ab = ab[sort_idx]
+            unique_wl, unique_idx = np.unique(wl, return_index=True)
+            wl = unique_wl
+            ab = ab[unique_idx]
+            if wl.size > 1:
+                series.append((wl, ab))
+
+        if not series:
+            fallback_wl = np.array(replicates[0].get('wavelengths', []), dtype=float)
+            fallback_ab = np.array(replicates[0].get('absorbances', []), dtype=float)
+            return fallback_wl, fallback_ab
+
+        overlap_min = max(wl[0] for wl, _ in series)
+        overlap_max = min(wl[-1] for wl, _ in series)
+
+        reference_wl = series[0][0]
+        if overlap_max > overlap_min:
+            overlap_grid = reference_wl[(reference_wl >= overlap_min) & (reference_wl <= overlap_max)]
+            if overlap_grid.size >= 2:
+                target_wl = overlap_grid
+            else:
+                target_wl = reference_wl
+        else:
+            target_wl = reference_wl
+
+        interpolated = []
+        for wl, ab in series:
+            interp = np.interp(target_wl, wl, ab, left=np.nan, right=np.nan)
+            interpolated.append(interp)
+
+        stacked = np.vstack(interpolated)
+        avg_absorbances = np.nanmean(stacked, axis=0)
+
+        if np.isnan(avg_absorbances).any():
+            ref_interp = np.interp(target_wl, series[0][0], series[0][1])
+            nan_mask = np.isnan(avg_absorbances)
+            avg_absorbances[nan_mask] = ref_interp[nan_mask]
+
+        return target_wl, avg_absorbances
 
     def _resolve_group_sample_type(self, replicates):
         """Resolve a single sample_type for an averaged replicate group."""
@@ -734,6 +783,39 @@ class DataSelectionUI(QWidget):
         if 'calibration' in normalized_types:
             return 'calibration'
         return None
+
+    def _resolve_group_property_value(self, replicates):
+        """Resolve one sample-level property value from all scans in the group."""
+        raw_values = []
+        for rep in replicates:
+            value = str(rep.get('property_value', '')).strip()
+            if not value or value == '0' or value.lower() == 'nan':
+                continue
+            raw_values.append(value)
+
+        if not raw_values:
+            return ''
+
+        numeric_values = []
+        for value in raw_values:
+            try:
+                numeric_values.append(float(value))
+            except (TypeError, ValueError):
+                numeric_values = []
+                break
+
+        if numeric_values:
+            rounded_counts = {}
+            for value in numeric_values:
+                key = f"{value:.6f}"
+                rounded_counts[key] = rounded_counts.get(key, 0) + 1
+            best_key = max(rounded_counts, key=rounded_counts.get)
+            return f"{float(best_key):.4f}"
+
+        text_counts = {}
+        for value in raw_values:
+            text_counts[value] = text_counts.get(value, 0) + 1
+        return max(text_counts, key=text_counts.get)
     
     def _ensure_temp_directory(self):
         """Create temp_data directory if it doesn't exist"""
@@ -1051,9 +1133,9 @@ class DataSelectionUI(QWidget):
         bottom_row.setSpacing(10)
         
         # --- Table ---
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
-            "ID", "sample name", "instrument", "serial number",
+            "tick", "ID", "sample name", "instrument", "serial number",
             "wavelength points", "wavelength", "absorbance",
             "creation time", "Protein"
         ])
@@ -1084,14 +1166,12 @@ class DataSelectionUI(QWidget):
         bottom_row.addWidget(self.table, 3)
         
         # --- Plot ---
-        self.plot = pg.PlotWidget()
-        self.plot.setBackground('w')
-        self.plot.setLabel("left", "absorbance(AU)")
-        self.plot.setLabel("bottom", "wavelength")
-        self.plot.showGrid(x=True, y=True)
-        self.plot.setTitle("60 absorbance spectrums of calibration set")
-        # Enable antialiasing for smooth lines
-        self.plot.setAntialiasing(True)
+        self.plot = PlotWidget(show_toolbar=True)
+        self.plot.reset_axes(
+            title="60 absorbance spectrums of calibration set",
+            xlabel="wavelength",
+            ylabel="absorbance(AU)"
+        )
         self.plot.setStyleSheet("border: 1px solid #d8e1eb; border-radius: 8px; background: #ffffff;")
         bottom_row.addWidget(self.plot, 2)
         

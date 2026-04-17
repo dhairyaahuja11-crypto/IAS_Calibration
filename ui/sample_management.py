@@ -507,8 +507,21 @@ class SampleManagementUI(QWidget):
 
                 current_substance = str(sample.get('substance_content', '')).strip()
                 existing_substance = str(grouped.get('substance_content', '')).strip()
-                if current_substance and len(current_substance) > len(existing_substance):
-                    grouped['substance_content'] = current_substance
+                if current_substance:
+                    if not existing_substance:
+                        grouped['substance_content'] = current_substance
+                    else:
+                        existing_parts = [part.strip() for part in existing_substance.split(',') if part.strip()]
+                        current_parts = [part.strip() for part in current_substance.split(',') if part.strip()]
+                        merged_parts = []
+                        seen = set()
+                        for part in existing_parts + current_parts:
+                            key = part.casefold()
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            merged_parts.append(part)
+                        grouped['substance_content'] = ", ".join(merged_parts) if merged_parts else existing_substance
 
                 current_time = str(sample.get('creation_time', '')).strip()
                 existing_time = str(grouped.get('creation_time', '')).strip()
@@ -829,20 +842,34 @@ class SampleManagementUI(QWidget):
     def _derive_sample_name_from_file(self, file_path):
         """Derive a sample name for file-based imports."""
         import os
+        import re
         from datetime import datetime
 
         filename = os.path.basename(file_path)
         base_name, _ = os.path.splitext(filename)
-        parts = base_name.split('_')
+        parts = [part.strip() for part in base_name.split('_') if part.strip()]
 
-        if len(parts) > 2 and len(parts[2]) > 14:
-            sample_name = parts[2][:-14]
-        elif len(parts) > 2:
-            sample_name = parts[2]
-        elif len(parts) > 1:
-            sample_name = parts[1]
-        else:
-            sample_name = base_name
+        sample_name = ""
+        candidate_tokens = []
+        if len(parts) > 1:
+            candidate_tokens.append(parts[1])
+        if len(parts) > 2:
+            candidate_tokens.append(parts[2])
+        candidate_tokens.append(base_name)
+
+        for token in candidate_tokens:
+            cleaned = token.strip()
+            if not cleaned:
+                continue
+
+            # Common scan filenames look like: ca95220260401-05136
+            # Keep the logical sample ID prefix before the timestamp suffix.
+            cleaned = re.sub(r"(?i)(20\d{6}.*)$", "", cleaned)
+            cleaned = re.sub(r"[-_]+$", "", cleaned)
+
+            if cleaned and not cleaned.isdigit():
+                sample_name = cleaned
+                break
 
         if not sample_name or not sample_name.strip():
             sample_name = base_name

@@ -6,15 +6,16 @@ from matplotlib.figure import Figure
 import numpy as np
 
 class PlotWidget(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, show_toolbar=True):
         super().__init__(parent)
 
         self.figure = Figure(figsize=(8, 6))
         self.canvas = FigureCanvas(self.figure)
-        self.toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar = NavigationToolbar(self.canvas, self) if show_toolbar else None
 
         layout = QVBoxLayout()
-        layout.addWidget(self.toolbar)
+        if self.toolbar is not None:
+            layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
         self.setLayout(layout)
 
@@ -27,12 +28,38 @@ class PlotWidget(QWidget):
         self.selected_line = None
         self.annotation = None
 
+    def _recreate_primary_axes(self):
+        """Rebuild the figure so toolbar actions operate on one clean axes stack."""
+        if self.toolbar is not None and hasattr(self.toolbar, "_nav_stack"):
+            try:
+                self.toolbar._nav_stack.clear()
+                self.toolbar.set_history_buttons()
+            except Exception:
+                pass
+        self.figure.clear()
+        self.ax = self.figure.add_subplot(111)
+
     def clear(self):
-        self.ax.clear()
-        self.canvas.draw()
+        self._recreate_primary_axes()
+        self.canvas.draw_idle()
+
+    def reset_axes(self, title="", xlabel="", ylabel="", grid=True):
+        self._recreate_primary_axes()
+        if xlabel:
+            self.ax.set_xlabel(xlabel, fontsize=10)
+        if ylabel:
+            self.ax.set_ylabel(ylabel, fontsize=10)
+        if title:
+            self.ax.set_title(title, fontsize=12, fontweight='bold')
+        if grid:
+            self.ax.grid(True, alpha=0.3)
+
+    def draw(self):
+        self.figure.tight_layout()
+        self.canvas.draw_idle()
 
     def plot_spectra(self, wavelengths, spectra, title="NIR Spectra", sample_names=None):
-        self.ax.clear()
+        self._recreate_primary_axes()
         self.lines = []
         self.wavelengths_data = wavelengths
         self.spectra_data = spectra
@@ -59,7 +86,7 @@ class PlotWidget(QWidget):
 
         self.canvas.mpl_connect('pick_event', self.on_pick)
 
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def on_pick(self, event):
         if event.artist not in self.lines:
@@ -99,4 +126,4 @@ class PlotWidget(QWidget):
             fontweight='bold'
         )
 
-        self.canvas.draw()
+        self.canvas.draw_idle()

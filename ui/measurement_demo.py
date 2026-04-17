@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QRadioButton, QGroupBox
 )
 from PyQt6.QtCore import Qt
-import pyqtgraph as pg
+from ui.plot_widget import PlotWidget
 
 
 class MeasurementDemoUI(QWidget):
@@ -94,10 +94,13 @@ class MeasurementDemoUI(QWidget):
         right_layout = QVBoxLayout(right_panel)
 
         # -------- Spectrogram --------
-        plot = pg.PlotWidget(title="spectrogram")
-        plot.setLabel("left", "absorbance(AU)")
-        plot.setLabel("bottom", "wavelength(nm)")
-        plot.showGrid(x=True, y=True)
+        plot = PlotWidget(show_toolbar=True)
+        plot.reset_axes(
+            title="spectrogram",
+            xlabel="wavelength(nm)",
+            ylabel="absorbance(AU)"
+        )
+        plot.draw()
 
         right_layout.addWidget(plot)
 

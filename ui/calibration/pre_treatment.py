@@ -4,11 +4,11 @@ from PyQt6.QtWidgets import (
     QDialog, QDoubleSpinBox, QMessageBox, QSpinBox, QSizePolicy
 )
 from PyQt6.QtCore import Qt
-import pyqtgraph as pg
 import numpy as np
 from collections import Counter
 from services.spectral_processing_service import SpectralProcessingService
 from services.preprocessing_service import PreprocessingService
+from ui.plot_widget import PlotWidget
 
 
 class PreTreatmentUI(QWidget):
@@ -244,13 +244,9 @@ class PreTreatmentUI(QWidget):
 
     # ================= PLOT FACTORY =================
     def _create_plot(self, title, y_label, x_label):
-        plot = pg.PlotWidget(title=title)
-        plot.setLabel("left", y_label)
-        plot.setLabel("bottom", x_label)
-        plot.showGrid(x=True, y=True)
-        plot.setBackground("w")
-        # Enable antialiasing for smooth lines
-        plot.setAntialiasing(True)
+        plot = PlotWidget(show_toolbar=False)
+        plot.reset_axes(title=title, xlabel=x_label, ylabel=y_label)
+        plot.draw()
         return plot
     
     def on_intercept_algo_activated(self, index):
@@ -585,11 +581,14 @@ class PreTreatmentUI(QWidget):
             # Re-display the original spectra and clear processed plot
             self._plot_spectra(self.original_spectra, self.original_plot, "original spectrogram")
             self.treated_plot.clear()
-            self.treated_plot.setTitle("spectrum after treatment")
+            self.treated_plot.ax.set_title("spectrum after treatment")
+            self.treated_plot.draw()
             self.corr_plot.clear()
-            self.corr_plot.setTitle("correlation coefficient diagram")
+            self.corr_plot.ax.set_title("correlation coefficient diagram")
+            self.corr_plot.draw()
             self.std_plot.clear()
-            self.std_plot.setTitle("standard deviation diagram")
+            self.std_plot.ax.set_title("standard deviation diagram")
+            self.std_plot.draw()
             
             QMessageBox.information(self, "Reset", "Reset preprocessing algorithms.\nCropping is preserved.")
         else:
@@ -602,24 +601,28 @@ class PreTreatmentUI(QWidget):
             
             QMessageBox.information(self, "Reset", "Reloaded data from temp_data.")
     
-    def _load_initial_data(self):
+    def _load_initial_data(self, project_name=None):
         """Load initial data from temp_data"""
-        self.current_data = SpectralProcessingService.load_latest_data()
+        self.current_data = SpectralProcessingService.load_latest_data(project_name=project_name)
         if self.current_data:
-            self.load_cropped_data(force_latest=True)
+            self.load_cropped_data(force_latest=True, project_name=project_name)
         else:
             self._clear_plots()
 
     def _clear_plots(self):
         """Clear all plots and restore default titles."""
         self.original_plot.clear()
-        self.original_plot.setTitle("original spectrogram")
+        self.original_plot.ax.set_title("original spectrogram")
+        self.original_plot.draw()
         self.treated_plot.clear()
-        self.treated_plot.setTitle("spectrum after treatment")
+        self.treated_plot.ax.set_title("spectrum after treatment")
+        self.treated_plot.draw()
         self.corr_plot.clear()
-        self.corr_plot.setTitle("correlation coefficient diagram")
+        self.corr_plot.ax.set_title("correlation coefficient diagram")
+        self.corr_plot.draw()
         self.std_plot.clear()
-        self.std_plot.setTitle("standard deviation diagram")
+        self.std_plot.ax.set_title("standard deviation diagram")
+        self.std_plot.draw()
 
     def _build_subset_data(self, samples):
         """Clone the current dataset metadata with a provided sample list."""
@@ -696,7 +699,8 @@ class PreTreatmentUI(QWidget):
         """Plot multiple spectra"""
         plot_widget.clear()
         if spectra is None or spectra.size == 0:
-            plot_widget.setTitle(title)
+            plot_widget.ax.set_title(title)
+            plot_widget.draw()
             return
         
         import random
@@ -707,17 +711,16 @@ class PreTreatmentUI(QWidget):
         for i in row_indices:
             color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
             if self.wavelengths is not None:
-                plot_widget.plot(
-                    self.wavelengths, 
-                    spectra[i], 
-                    pen=pg.mkPen(color=color, width=1),
-                    antialias=True,
-                    connect='all'
-                )
+                normalized = tuple(channel / 255 for channel in color)
+                plot_widget.ax.plot(self.wavelengths, spectra[i], color=normalized, linewidth=1)
         if len(row_indices) < spectra.shape[0]:
-            plot_widget.setTitle(f"{title} ({len(row_indices)} of {spectra.shape[0]} spectra)")
+            plot_widget.ax.set_title(f"{title} ({len(row_indices)} of {spectra.shape[0]} spectra)")
         else:
-            plot_widget.setTitle(f"{title} ({spectra.shape[0]} spectra)")
+            plot_widget.ax.set_title(f"{title} ({spectra.shape[0]} spectra)")
+        plot_widget.ax.set_xlabel("wavelength")
+        plot_widget.ax.set_ylabel("absorbance(AU)")
+        plot_widget.ax.grid(True, alpha=0.3)
+        plot_widget.draw()
 
     def _sample_indices_for_plot(self, count, limit):
         """Reduce plotting load by sampling rows evenly."""
@@ -737,19 +740,16 @@ class PreTreatmentUI(QWidget):
     def _plot_line(self, x: np.ndarray, y: np.ndarray, plot_widget, title: str, color='b'):
         """Plot a single line"""
         plot_widget.clear()
-        plot_widget.plot(
-            x, y, 
-            pen=pg.mkPen(color=color, width=1),
-            antialias=True,
-            connect='all'
-        )
-        plot_widget.setTitle(title)
+        plot_widget.ax.plot(x, y, color=color, linewidth=1)
+        plot_widget.ax.set_title(title)
+        plot_widget.ax.grid(True, alpha=0.3)
+        plot_widget.draw()
     
-    def load_cropped_data(self, force_latest=False):
+    def load_cropped_data(self, force_latest=False, project_name=None):
         """Load and display cropped data in plots"""
         try:
-            data = SpectralProcessingService.load_latest_data() if force_latest else (
-                self.current_data or SpectralProcessingService.load_latest_data()
+            data = SpectralProcessingService.load_latest_data(project_name=project_name) if force_latest else (
+                self.current_data or SpectralProcessingService.load_latest_data(project_name=project_name)
             )
             self.current_data = data
 
@@ -788,24 +788,27 @@ class PreTreatmentUI(QWidget):
                 
                 if wavelengths and absorbances:
                     color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
-                    self.original_plot.plot(
-                        wavelengths, absorbances, 
-                        pen=pg.mkPen(color=color, width=1),
-                        antialias=True,
-                        connect='all'
-                    )
+                    normalized = tuple(channel / 255 for channel in color)
+                    self.original_plot.ax.plot(wavelengths, absorbances, color=normalized, linewidth=1)
             
             base_title = self._build_loaded_title(calibration_samples)
             if len(sample_rows) < len(calibration_samples):
-                self.original_plot.setTitle(f"{base_title} (showing {len(sample_rows)})")
+                self.original_plot.ax.set_title(f"{base_title} (showing {len(sample_rows)})")
             else:
-                self.original_plot.setTitle(base_title)
+                self.original_plot.ax.set_title(base_title)
+            self.original_plot.ax.set_xlabel("wavelength")
+            self.original_plot.ax.set_ylabel("absorbance(AU)")
+            self.original_plot.ax.grid(True, alpha=0.3)
+            self.original_plot.draw()
             self.treated_plot.clear()
-            self.treated_plot.setTitle("spectrum after treatment")
+            self.treated_plot.ax.set_title("spectrum after treatment")
+            self.treated_plot.draw()
             self.corr_plot.clear()
-            self.corr_plot.setTitle("correlation coefficient diagram")
+            self.corr_plot.ax.set_title("correlation coefficient diagram")
+            self.corr_plot.draw()
             self.std_plot.clear()
-            self.std_plot.setTitle("standard deviation diagram")
+            self.std_plot.ax.set_title("standard deviation diagram")
+            self.std_plot.draw()
             
         except Exception:
             pass
@@ -947,7 +950,10 @@ class SpectraCroppingDialog(QDialog):
     def reset_to_original(self):
         """Reset to original wavelength range and reload uncropped data"""
         # Try to load the original uncropped data
-        original_data = SpectralProcessingService.load_original_uncropped_data()
+        project_name = ""
+        if self.loaded_data:
+            project_name = str(self.loaded_data.get('metadata', {}).get('project_name', '')).strip()
+        original_data = SpectralProcessingService.load_original_uncropped_data(project_name=project_name or None)
         
         if original_data:
             # Save the original data to temp_data so it becomes the latest file

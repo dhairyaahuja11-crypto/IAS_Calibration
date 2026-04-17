@@ -332,6 +332,40 @@ class DataManagementUI(QWidget):
         splitter.setSizes([900, 620])
         main_layout.addWidget(splitter)
 
+    def _derive_sample_name_from_filename(self, file_path):
+        """Derive a logical sample name from imported scan filenames."""
+        filename = os.path.basename(file_path)
+        base_name, _ = os.path.splitext(filename)
+        parts = [part.strip() for part in base_name.split('_') if part.strip()]
+
+        candidate_tokens = []
+        if len(parts) > 1:
+            candidate_tokens.append(parts[1])
+        if len(parts) > 2:
+            candidate_tokens.append(parts[2])
+        candidate_tokens.append(base_name)
+
+        sample_name = ""
+        for token in candidate_tokens:
+            cleaned = token.strip()
+            if not cleaned:
+                continue
+
+            # Example: ca95220260401-05136 -> ca952
+            cleaned = re.sub(r"(?i)(20\d{6}.*)$", "", cleaned)
+            cleaned = re.sub(r"[-_]+$", "", cleaned)
+
+            if cleaned and not cleaned.isdigit():
+                sample_name = cleaned
+                break
+
+        if not sample_name:
+            sample_name = base_name
+        if len(sample_name) > 50:
+            sample_name = sample_name[:40] + sample_name[-10:]
+
+        return sample_name[:50]
+
     # ---------------- SIGNALS ----------------
     def _connect_signals(self):
         self.btn_import.clicked.connect(self.open_data_import_dialog)
@@ -994,12 +1028,7 @@ class DataManagementUI(QWidget):
                     
                     # Unified sample name extraction for both file and folder
                     filename = os.path.basename(file_path)
-                    base_name = filename.replace('.csv', '')
-                    parts = base_name.split('_')
-                    if len(parts) > 2:
-                        sample_name = parts[2][0:-14]
-                    else:
-                        sample_name = base_name
+                    sample_name = self._derive_sample_name_from_filename(file_path)
                     
                     print(f"Sample name: {sample_name}, Columns: {list(data_df.columns)}")
                     
@@ -1176,12 +1205,7 @@ class DataManagementUI(QWidget):
             mode = data.get('mode', '').lower()
             
             # Unified sample name extraction for both file and folder
-            base_name = filename.replace('.csv', '')
-            parts = base_name.split('_')
-            if len(parts) > 2:
-                sample_name = parts[2][0:-14]
-            else:
-                sample_name = base_name
+            sample_name = self._derive_sample_name_from_filename(file_path)
             
             # Truncate sample_name to fit VARCHAR(50) limit
             if len(sample_name) > 50:

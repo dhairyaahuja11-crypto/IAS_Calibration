@@ -854,28 +854,57 @@ class SampleService:
                         else:
                             sample_name = str(value).strip()
                     
-                    # Need both ID and name for precise matching
-                    if not sample_id or not sample_name:
-                        errors.append(f"Row {idx+2}: Missing sample ID or sample name")
+                    # Support files that provide only one identifier column.
+                    if not sample_id and not sample_name:
+                        errors.append(f"Row {idx+2}: Missing sample ID and sample name")
                         continue
                     
-                    # Match the sample-level group directly; properties should apply to all scans.
+                    lookup_id = (sample_id or sample_name or "").strip()
+                    lookup_name = (sample_name or sample_id or "").strip()
+
+                    # Match either by DB sample_id or sample_name (case-insensitive, trimmed).
                     cursor.execute("""
                         SELECT s.sample_id, s.sample_name
                         FROM sample s
-                        WHERE s.sample_name = %s
+                        WHERE (
+                            CAST(s.sample_id AS CHAR) = %s
+                            OR LOWER(TRIM(s.sample_name)) = LOWER(TRIM(%s))
+                        )
                           AND (s.sample_state IS NULL OR s.sample_state != 'Deleted')
-                    """, (sample_name,))
+                    """, (lookup_id, lookup_name))
                     
                     results = cursor.fetchall()
                     if not results:
-                        errors.append(f"Row {idx+2}: Sample ID '{sample_id}' with name '{sample_name}' not found")
+                        errors.append(
+                            f"Row {idx+2}: Sample reference '{lookup_id}' / '{lookup_name}' not found"
+                        )
                         continue
                     
                     db_sample_ids = [result['sample_id'] for result in results]
-                    if str(sample_id) not in [str(db_sample_id) for db_sample_id in db_sample_ids]:
-                        errors.append(f"Row {idx+2}: Sample ID '{sample_id}' with name '{sample_name}' not found")
-                        continue
+                    if sample_id and sample_name:
+                        exact_matches = [
+                            result for result in results
+                            if str(result['sample_id']) == str(sample_id)
+                            or str(result['sample_name']).strip().casefold() == str(sample_name).strip().casefold()
+                        ]
+                        if exact_matches:
+                            db_sample_ids = [result['sample_id'] for result in exact_matches]
+                        else:
+                            # Soft fallback: if either identifier matched, proceed with those rows.
+                            matched_by_id = [
+                                result for result in results
+                                if str(result['sample_id']) == str(sample_id)
+                            ]
+                            matched_by_name = [
+                                result for result in results
+                                if str(result['sample_name']).strip().casefold() == str(sample_name).strip().casefold()
+                            ]
+                            fallback = matched_by_id or matched_by_name
+                            if fallback:
+                                db_sample_ids = [result['sample_id'] for result in fallback]
+                            else:
+                                errors.append(f"Row {idx+2}: Sample ID '{sample_id}' with name '{sample_name}' not found")
+                                continue
                     
                     # 🔴 FILTER: Only update samples that were selected/checked in UI
                     if selected_sample_ids:
@@ -885,7 +914,7 @@ class SampleService:
                         ]
                         
                         if not db_sample_ids:
-                            errors.append(f"Row {idx+2}: Sample '{sample_name}' not in selected samples")
+                            errors.append(f"Row {idx+2}: Sample '{lookup_name}' not in selected samples")
                             continue
                     
                     # Extract property values from CSV columns
@@ -903,8 +932,12 @@ class SampleService:
                                     property_value = str(value).strip()
                                 if property_value and property_value != '0' and property_value.lower() != 'nan':
                                     properties.append((property_id, property_value))
+
+                    if not properties:
+                        errors.append(f"Row {idx+2}: No non-empty substance values found to import")
+                        continue
                     
-                    # Update ALL samples with the same sample_name (all replicates)
+                    # Update all matched rows (all scans/replicates for the matched sample)
                     if properties:
                         update_fields = []
                         update_values = []

@@ -71,12 +71,50 @@ class CalibrationMainUI(QWidget):
         """Handle data passing when switching tabs"""
         tab_name = self.tabs.tabText(index).lower()
         
-        # When switching to dimension reduction, pass preprocessed data
-        if tab_name == "dimension reduction analysis":
+        if tab_name == "pre-treatment":
+            self._sync_pre_treatment_project_data()
+        elif tab_name == "dimension reduction analysis":
             self._pass_data_to_dimension_reduction()
         elif tab_name == "analysis and measure":
+            self._sync_pre_treatment_project_data()
             self.analysis_measure_tab.refresh_data()
             self._pass_data_to_analysis_measure()
+
+    def _sync_pre_treatment_project_data(self):
+        """Reload pre-treatment data only when the selected project changed."""
+        selected_project = str(getattr(self.data_selection_tab, 'current_project_name', '') or '').strip()
+        current_project = ""
+        current_timestamp = ""
+        current_data_type = ""
+        if getattr(self.pre_treatment_tab, 'current_data', None):
+            current_metadata = self.pre_treatment_tab.current_data.get('metadata', {})
+            current_project = str(current_metadata.get('project_name', '')).strip()
+            current_timestamp = str(current_metadata.get('timestamp', '')).strip()
+            current_data_type = str(current_metadata.get('data_type', '')).strip().lower()
+
+        if not selected_project:
+            return
+
+        latest_project_data = SpectralProcessingService.load_latest_data(project_name=selected_project)
+        latest_metadata = (latest_project_data or {}).get('metadata', {})
+        latest_timestamp = str(latest_metadata.get('timestamp', '')).strip()
+        latest_data_type = str(latest_metadata.get('data_type', '')).strip().lower()
+
+        should_reload = (
+            selected_project != current_project
+            or (latest_timestamp and latest_timestamp != current_timestamp)
+            or (latest_data_type and latest_data_type != current_data_type)
+        )
+
+        if should_reload:
+            self.pre_treatment_tab.original_spectra = None
+            self.pre_treatment_tab.processed_spectra = None
+            self.pre_treatment_tab.validation_original_spectra = None
+            self.pre_treatment_tab.processed_validation_spectra = None
+            self.pre_treatment_tab.applied_algorithms = []
+            self.pre_treatment_tab.applied_algorithm_steps = []
+            self.pre_treatment_tab.intercept_metadata = {}
+            self.pre_treatment_tab.load_cropped_data(force_latest=True, project_name=selected_project)
     
     def _pass_data_to_dimension_reduction(self):
         """Pass preprocessed data from pre-treatment to dimension reduction"""
@@ -299,7 +337,8 @@ class CalibrationMainUI(QWidget):
 
     def _read_temp_metadata(self, key=None):
         """Read the latest temp_data metadata for model persistence details."""
-        data = SpectralProcessingService.load_latest_data() or {}
+        project_name = str(getattr(self.data_selection_tab, 'current_project_name', '') or '').strip() or None
+        data = SpectralProcessingService.load_latest_data(project_name=project_name) or {}
         metadata = data.get('metadata', {})
         if key is None:
             return metadata

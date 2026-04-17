@@ -11,10 +11,10 @@ from datetime import datetime
 import json
 import math
 import numpy as np
-import pyqtgraph as pg
 
 from services.chemometric_service import ChemometricAnalyzer
 from services.model_management_service import ModelManagementService
+from ui.plot_widget import PlotWidget
 
 
 class AnalysisMeasureUI(QWidget):
@@ -133,11 +133,11 @@ class AnalysisMeasureUI(QWidget):
 
         middle_layout = QHBoxLayout()
 
-        self.table = QTableWidget(0, 10)
+        self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels([
             "ID", "sample name", "serial number", "wavelength points",
             "wavelength", "absorbance", "creation time",
-            "actual value", "measurement value", "relative error"
+            "actual value", "measurement value", "deviation", "error", "relative error"
         ])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAlternatingRowColors(True)
@@ -173,7 +173,7 @@ class AnalysisMeasureUI(QWidget):
             ("SECV:", "secv"),
             ("SEP:", "sep"),
             ("RPD:", "rpd"),
-            ("E:", "e"),
+            ("Max E:", "e"),
             ("R:", "r"),
             ("R2:", "r2"),
             ("t:", "t"),
@@ -285,7 +285,17 @@ class AnalysisMeasureUI(QWidget):
             self._analyse_saved_model()
 
     def _analyse_current_project(self):
-        if self.analysis_context and self.analysis_context.get("project_name"):
+        selected_project_id = self.current_model_combo.currentData()
+        context_project_id = self.analysis_context.get("project_id") if self.analysis_context else None
+
+        if (
+            self.analysis_context
+            and self.analysis_context.get("project_name")
+            and (
+                not selected_project_id
+                or str(selected_project_id) == str(context_project_id)
+            )
+        ):
             try:
                 rows = self._rows_from_context_scope()
                 self.current_project_id = self.analysis_context.get("project_id")
@@ -302,7 +312,7 @@ class AnalysisMeasureUI(QWidget):
             except Exception as e:
                 QMessageBox.warning(self, "Context Error", f"Failed to load carried analysis context:\n{e}")
 
-        project_id = self.current_model_combo.currentData()
+        project_id = selected_project_id
         if not project_id:
             QMessageBox.warning(self, "No Project", "Please select a current project first.")
             return
@@ -373,6 +383,8 @@ class AnalysisMeasureUI(QWidget):
                 str(row.get("create_time", "")),
                 row.get("property_value", ""),
                 row.get("measurement_value", ""),
+                row.get("deviation", ""),
+                row.get("absolute_error", ""),
                 row.get("relative_error", "")
             ]
 
@@ -443,11 +455,16 @@ class AnalysisMeasureUI(QWidget):
 
         for row in self.current_rows:
             row["measurement_value"] = ""
+            row["deviation"] = ""
+            row["absolute_error"] = ""
             row["relative_error"] = ""
 
         for row_idx, actual, measurement in zip(valid_indices, actuals, predictions):
             self.current_rows[row_idx]["measurement_value"] = f"{measurement:.4f}"
-            rel_error = 0.0 if actual == 0 else ((measurement - actual) / actual) * 100
+            deviation = measurement - actual
+            rel_error = 0.0 if actual == 0 else (deviation / actual) * 100
+            self.current_rows[row_idx]["deviation"] = f"{deviation:+.4f}"
+            self.current_rows[row_idx]["absolute_error"] = f"{abs(deviation):.4f}"
             self.current_rows[row_idx]["relative_error"] = f"{rel_error:.2f}%"
 
         self._populate_table(self.current_rows)
@@ -472,6 +489,7 @@ class AnalysisMeasureUI(QWidget):
         validation_spectra = self.analysis_context.get("validation_spectra")
         validation_targets = self.analysis_context.get("validation_targets")
         dim_results = self.analysis_context.get("dimension_results") or {}
+        cv_folds = int(dim_results.get("cv_folds", 5) or 0)
 
         if calibration_spectra is None or calibration_targets is None:
             return False
@@ -482,7 +500,7 @@ class AnalysisMeasureUI(QWidget):
                 calibration_spectra,
                 calibration_targets,
                 n_components=int(dim_results["best_n_components"]),
-                cv=5,
+                cv=cv_folds,
                 optimize=False
             )
         else:
@@ -490,7 +508,7 @@ class AnalysisMeasureUI(QWidget):
                 calibration_spectra,
                 calibration_targets,
                 n_components=min(12, calibration_spectra.shape[1], len(calibration_targets)),
-                cv=5,
+                cv=cv_folds,
                 optimize=True
             )
 
@@ -510,11 +528,16 @@ class AnalysisMeasureUI(QWidget):
 
         for row in self.current_rows:
             row["measurement_value"] = ""
+            row["deviation"] = ""
+            row["absolute_error"] = ""
             row["relative_error"] = ""
 
         for row, actual, measurement in zip(self.current_rows, actuals, predictions):
             row["measurement_value"] = f"{measurement:.4f}"
-            rel_error = 0.0 if actual == 0 else ((measurement - actual) / actual) * 100
+            deviation = measurement - actual
+            rel_error = 0.0 if actual == 0 else (deviation / actual) * 100
+            row["deviation"] = f"{deviation:+.4f}"
+            row["absolute_error"] = f"{abs(deviation):.4f}"
             row["relative_error"] = f"{rel_error:.2f}%"
 
         self._populate_table(self.current_rows)
@@ -593,6 +616,8 @@ class AnalysisMeasureUI(QWidget):
                 "create_time": meta.get("create_time", ""),
                 "property_value": f"{float(target):.4f}",
                 "measurement_value": "",
+                "deviation": "",
+                "absolute_error": "",
                 "relative_error": ""
             })
         return rows
@@ -792,7 +817,7 @@ class AnalysisMeasureUI(QWidget):
         mean_actual = sum(actuals) / count if count else 0.0
         rmse = math.sqrt(sum(squared_errors) / count) if count else 0.0
         mae = sum(abs_errors) / count if count else 0.0
-        bias = sum(errors) / count if count else 0.0
+        max_error = max(abs_errors) if abs_errors else 0.0
         accuracy = 0.0
 
         percentage_errors = []
@@ -818,7 +843,7 @@ class AnalysisMeasureUI(QWidget):
             "secv": f"{rmse:.4f}",
             "sep": f"{mae:.4f}",
             "rpd": f"{rpd:.4f}",
-            "e": f"{bias:.4f}",
+            "e": f"{max_error:.4f}",
             "r": f"{correlation:.4f}",
             "r2": f"{r2:.4f}",
             "t": f"{count}",
@@ -856,15 +881,17 @@ class AnalysisMeasureUI(QWidget):
             return
 
         dialog = QDialog(self)
-        dialog.setWindowTitle("Deviation Diagram")
+        dialog.setWindowTitle("Deviation and Error Diagram")
         dialog.resize(760, 560)
         layout = QVBoxLayout(dialog)
 
-        plot = pg.PlotWidget()
-        plot.setBackground("w")
-        plot.showGrid(x=True, y=True, alpha=0.3)
-        plot.setLabel("left", "Measured / Predicted Value")
-        plot.setLabel("bottom", "Actual Value")
+        plot = PlotWidget(show_toolbar=True)
+        plot.reset_axes(
+            title="",
+            xlabel="Actual Value",
+            ylabel="Measured / Predicted Value"
+        )
+        plot.draw()
         layout.addWidget(plot)
 
         self.deviation_dialog = dialog
@@ -882,7 +909,11 @@ class AnalysisMeasureUI(QWidget):
 
         self._ensure_deviation_dialog()
         self.deviation_plot.clear()
-        self.deviation_plot.setTitle(f"Deviation Diagram ({self._selected_data_scope()})")
+        self.deviation_plot.reset_axes(
+            title=f"Deviation and Error Diagram ({self._selected_data_scope()})",
+            xlabel="Actual Value",
+            ylabel="Measured / Predicted Value"
+        )
 
         min_val = float(min(np.min(actuals), np.min(predicted)))
         max_val = float(max(np.max(actuals), np.max(predicted)))
@@ -890,45 +921,58 @@ class AnalysisMeasureUI(QWidget):
             min_val -= 1.0
             max_val += 1.0
 
-        self.deviation_plot.plot(
+        self.deviation_plot.ax.plot(
             [min_val, max_val],
             [min_val, max_val],
-            pen=pg.mkPen("#6b7280", width=2, style=Qt.PenStyle.DashLine)
+            color="#6b7280",
+            linewidth=2,
+            linestyle="--"
         )
 
-        spots = []
+        x_vals = []
+        y_vals = []
+        tooltips = []
         for row, actual, measurement in zip(rows, actuals, predicted):
             sample_name = row.get("sample_name", "Sample")
-            spots.append({
-                "pos": (actual, measurement),
-                "size": 9,
-                "brush": pg.mkBrush(37, 99, 235, 180),
-                "pen": pg.mkPen(255, 255, 255, 180),
-                "data": {"tooltip": f"{sample_name}\nActual: {actual:.4f}\nMeasured: {measurement:.4f}"}
-            })
+            deviation = measurement - actual
+            x_vals.append(actual)
+            y_vals.append(measurement)
+            tooltips.append(
+                f"{sample_name}\n"
+                f"Actual: {actual:.4f}\n"
+                f"Measured: {measurement:.4f}\n"
+                f"Deviation: {deviation:+.4f}\n"
+                f"Error: {abs(deviation):.4f}"
+            )
 
-        scatter = pg.ScatterPlotItem(spots=spots)
-        self.deviation_plot.addItem(scatter)
-
-        self.deviation_plot.setXRange(min_val, max_val, padding=0.05)
-        self.deviation_plot.setYRange(min_val, max_val, padding=0.05)
-
-        try:
-            scatter.sigClicked.disconnect()
-        except Exception:
-            pass
-        scatter.sigClicked.connect(self._on_deviation_point_clicked)
+        scatter = self.deviation_plot.ax.scatter(
+            x_vals,
+            y_vals,
+            s=70,
+            c="#2563eb",
+            edgecolors="white",
+            linewidths=0.8,
+            alpha=0.85,
+            picker=True
+        )
+        self.deviation_plot.ax.set_xlim(min_val, max_val)
+        self.deviation_plot.ax.set_ylim(min_val, max_val)
+        self.deviation_plot.draw()
+        self._deviation_tooltips = tooltips
+        self._deviation_scatter = scatter
+        self.deviation_plot.canvas.mpl_connect("pick_event", self._on_deviation_point_clicked)
 
         self.deviation_dialog.show()
         self.deviation_dialog.raise_()
         self.deviation_dialog.activateWindow()
 
-    def _on_deviation_point_clicked(self, _, points):
-        if not points:
+    def _on_deviation_point_clicked(self, event):
+        if getattr(self, "_deviation_scatter", None) is None or event.artist is not self._deviation_scatter:
             return
-
-        point = points[0]
-        tip = point.data().get("tooltip") if isinstance(point.data(), dict) else None
+        if not getattr(event, "ind", None):
+            return
+        point_index = event.ind[0]
+        tip = self._deviation_tooltips[point_index] if point_index < len(getattr(self, "_deviation_tooltips", [])) else None
         if tip:
             QMessageBox.information(self, "Deviation Point", tip)
 

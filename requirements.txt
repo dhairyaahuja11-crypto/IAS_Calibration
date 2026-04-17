@@ -24,3 +24,8 @@ python-dotenv>=1.0.0
 
 # to run file
 # .\.venv311\Scripts\python.exe main.py
+
+# git add .
+
+# git commit -m "Update requirements.txt with latest dependencies"
+# git push origin main

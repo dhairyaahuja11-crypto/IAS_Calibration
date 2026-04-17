@@ -20,14 +20,9 @@ class SpectralProcessingService:
         return temp_dir
     
     @staticmethod
-    def load_latest_data() -> Optional[Dict]:
+    def load_latest_data(project_name: Optional[str] = None) -> Optional[Dict]:
         """
-        Load the most appropriate recent data from temp_data.
-
-        Preference order:
-        1. Latest averaged file for the same project as the newest file.
-        2. Latest averaged file overall.
-        3. Latest JSON file overall.
+        Load the newest temp_data payload, optionally restricted to one project.
         
         Returns:
             Dictionary with loaded data or None if no data found
@@ -58,25 +53,27 @@ class SpectralProcessingService:
             if not file_entries:
                 return None
 
-            newest_entry = file_entries[0]
-            newest_project = newest_entry['project_name']
+            if project_name:
+                requested = str(project_name).strip()
+                project_entries = [entry for entry in file_entries if entry['project_name'] == requested]
+                if not project_entries:
+                    return None
 
-            if newest_project:
-                for entry in file_entries:
-                    if entry['project_name'] == newest_project and entry['data_type'] == 'averaged':
+                # Prefer averaged project data when available, since downstream
+                # calibration/modeling is usually expected to run on one row per sample.
+                for entry in project_entries:
+                    if entry['data_type'] == 'averaged':
                         return entry['data']
 
-            for entry in file_entries:
-                if entry['data_type'] == 'averaged':
-                    return entry['data']
+                return project_entries[0]['data']
 
-            return newest_entry['data']
+            return file_entries[0]['data']
             
         except Exception as e:
             return None
     
     @staticmethod
-    def load_original_uncropped_data() -> Optional[Dict]:
+    def load_original_uncropped_data(project_name: Optional[str] = None) -> Optional[Dict]:
         """
         Load the original uncropped data for the current project
         Searches for files marked with cropped=False in metadata
@@ -92,10 +89,11 @@ class SpectralProcessingService:
             if not json_files:
                 return None
             
-            # Get project name from the most recent file
-            with open(json_files[0], 'r') as f:
-                recent_data = json.load(f)
-            project_name = recent_data.get('metadata', {}).get('project_name', '')
+            requested_project = str(project_name).strip() if project_name else ""
+            if not requested_project:
+                with open(json_files[0], 'r') as f:
+                    recent_data = json.load(f)
+                requested_project = recent_data.get('metadata', {}).get('project_name', '')
             
             # Search for the original uncropped file for this project
             for json_file in json_files:
@@ -108,7 +106,7 @@ class SpectralProcessingService:
                     is_cropped = metadata.get('cropped', False)
                     
                     # Found original uncropped file for same project
-                    if file_project == project_name and not is_cropped:
+                    if file_project == requested_project and not is_cropped:
                         return data
                 
                 except Exception as e:

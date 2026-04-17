@@ -65,19 +65,29 @@ class ChemometricAnalyzer:
             raise ValueError("PLSR spectra and target arrays must have the same number of samples.")
 
         n_samples, n_features = X.shape
-        if n_samples < 5:
+        if n_samples < 2:
             raise ValueError(
-                "PLSR requires at least 5 samples for a meaningful cross-validation result. "
+                "PLSR requires at least 2 samples. "
                 f"Received {n_samples} sample(s)."
             )
 
-        cv = min(int(cv), n_samples)
-        if cv < 2:
-            raise ValueError("PLSR cross-validation requires at least 2 folds.")
+        requested_cv = int(cv)
+        cv_enabled = requested_cv >= 2
+        cv_splitter = None
 
-        cv_splitter = KFold(n_splits=cv, shuffle=True, random_state=42)
-        min_train_size = min(len(train_idx) for train_idx, _ in cv_splitter.split(X))
-        max_components = min(int(n_components), n_features, min_train_size)
+        if cv_enabled:
+            if n_samples < 5:
+                raise ValueError(
+                    "PLSR requires at least 5 samples for a meaningful cross-validation result. "
+                    f"Received {n_samples} sample(s)."
+                )
+            cv = min(requested_cv, n_samples)
+            cv_splitter = KFold(n_splits=cv, shuffle=True, random_state=42)
+            min_train_size = min(len(train_idx) for train_idx, _ in cv_splitter.split(X))
+            max_components = min(int(n_components), n_features, min_train_size)
+        else:
+            cv = 0
+            max_components = min(int(n_components), n_features, n_samples)
 
         if max_components < 1:
             raise ValueError(
@@ -88,8 +98,9 @@ class ChemometricAnalyzer:
         best_n_comp = 1
         r2_scores = []
         rmse_scores = []
+        component_metrics = []
 
-        if optimize:
+        if optimize and cv_enabled:
             # Find optimal number of components
             for n in range(1, max_components + 1):
                 pls = PLSRegression(n_components=n)
@@ -100,6 +111,11 @@ class ChemometricAnalyzer:
 
                 r2_scores.append(r2)
                 rmse_scores.append(rmse)
+                component_metrics.append({
+                    'component': n,
+                    'r2_cv': r2,
+                    'rmse_cv': rmse
+                })
 
                 if r2 > best_r2:
                     best_r2 = r2
@@ -108,11 +124,20 @@ class ChemometricAnalyzer:
             # Use fixed number of components
             best_n_comp = max_components
             pls = PLSRegression(n_components=best_n_comp)
-            y_pred_cv = cross_val_predict(pls, X, y, cv=cv_splitter)
-            r2 = r2_score(y, y_pred_cv)
-            rmse = np.sqrt(mean_squared_error(y, y_pred_cv))
+            if cv_enabled:
+                y_pred_eval = cross_val_predict(pls, X, y, cv=cv_splitter)
+            else:
+                pls.fit(X, y)
+                y_pred_eval = pls.predict(X).ravel()
+            r2 = r2_score(y, y_pred_eval)
+            rmse = np.sqrt(mean_squared_error(y, y_pred_eval))
             r2_scores = [r2]
             rmse_scores = [rmse]
+            component_metrics = [{
+                'component': best_n_comp,
+                'r2_cv': r2,
+                'rmse_cv': rmse
+            }]
 
         # Train final model with optimal/fixed components
         self.pls_model = PLSRegression(n_components=best_n_comp)
@@ -120,33 +145,41 @@ class ChemometricAnalyzer:
 
         # Get predictions
         y_pred_train = self.pls_model.predict(X).ravel()
-        y_pred_cv = cross_val_predict(PLSRegression(n_components=best_n_comp), X, y, cv=cv_splitter).ravel()
+        if cv_enabled:
+            y_pred_cv = cross_val_predict(
+                PLSRegression(n_components=best_n_comp), X, y, cv=cv_splitter
+            ).ravel()
+        else:
+            y_pred_cv = y_pred_train.copy()
 
         # Calculate fold-by-fold metrics
         fold_metrics = []
-        for fold_idx, (train_idx, test_idx) in enumerate(cv_splitter.split(X)):
-            X_train_fold, X_test_fold = X[train_idx], X[test_idx]
-            y_train_fold, y_test_fold = y[train_idx], y[test_idx]
+        if cv_enabled:
+            for fold_idx, (train_idx, test_idx) in enumerate(cv_splitter.split(X)):
+                X_train_fold, X_test_fold = X[train_idx], X[test_idx]
+                y_train_fold, y_test_fold = y[train_idx], y[test_idx]
 
-            fold_model = PLSRegression(n_components=best_n_comp)
-            fold_model.fit(X_train_fold, y_train_fold)
-            y_pred_fold = fold_model.predict(X_test_fold).ravel()
+                fold_model = PLSRegression(n_components=best_n_comp)
+                fold_model.fit(X_train_fold, y_train_fold)
+                y_pred_fold = fold_model.predict(X_test_fold).ravel()
 
-            fold_r2 = np.nan if len(test_idx) < 2 else r2_score(y_test_fold, y_pred_fold)
-            fold_rmse = np.sqrt(mean_squared_error(y_test_fold, y_pred_fold))
+                fold_r2 = np.nan if len(test_idx) < 2 else r2_score(y_test_fold, y_pred_fold)
+                fold_rmse = np.sqrt(mean_squared_error(y_test_fold, y_pred_fold))
 
-            fold_metrics.append({
-                'fold': fold_idx + 1,
-                'r2': fold_r2,
-                'rmse': fold_rmse,
-                'n_samples': len(test_idx)
-            })
+                fold_metrics.append({
+                    'fold': fold_idx + 1,
+                    'r2': fold_r2,
+                    'rmse': fold_rmse,
+                    'n_samples': len(test_idx)
+                })
 
         self.pls_results = {
             'model': self.pls_model,
             'best_n_components': best_n_comp,
             'r2_scores': r2_scores,
             'rmse_scores': rmse_scores,
+            'component_metrics': component_metrics,
+            'optimization_iterations': len(component_metrics),
             'y_pred_train': y_pred_train,
             'y_pred_cv': y_pred_cv,
             'r2_train': r2_score(y, y_pred_train),
@@ -159,6 +192,7 @@ class ChemometricAnalyzer:
             'intercept': float(self.pls_model.intercept_[0]) if hasattr(self.pls_model.intercept_, '__len__') else float(self.pls_model.intercept_),
             'n_samples': len(y),
             'cv_folds': cv,
+            'cv_enabled': cv_enabled,
             'max_components_tested': max_components,
             'fold_metrics': fold_metrics,
             'optimized': optimize

@@ -2,16 +2,17 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QComboBox, QRadioButton,
     QDoubleSpinBox, QSpinBox, QVBoxLayout, QHBoxLayout,
     QGroupBox, QMessageBox, QListWidget, QCheckBox, QMenu,
-    QDialog, QDialogButtonBox, QSizePolicy
+    QDialog, QDialogButtonBox, QSizePolicy, QTableWidget,
+    QTableWidgetItem, QHeaderView
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QCursor
-import pyqtgraph as pg
 import numpy as np
 from services.chemometric_service import ChemometricAnalyzer
 from pathlib import Path
 import json
 from datetime import datetime
+from ui.plot_widget import PlotWidget
 
 
 class DimensionReductionUI(QWidget):
@@ -27,6 +28,13 @@ class DimensionReductionUI(QWidget):
         self.validation_indices = []  # Track validation set indices
         self.current_results = None
         self.analysis_indices = []  # Original sample indices used in the current result set
+        self.current_plot_mode = None
+        self.current_plot_payload = {}
+        self._secondary_axis = None
+        self._mpl_pick_map = {}
+        self._mpl_pick_connection = None
+        self._mpl_hover_connection = None
+        self.tooltip_text = None
         
         # Multi-select outlier removal state
         self.selection_mode = False
@@ -107,8 +115,9 @@ class DimensionReductionUI(QWidget):
         self.cv_label = QLabel("CV folds:")
         top_layout.addWidget(self.cv_label)
         self.cv_spin = QSpinBox()
-        self.cv_spin.setRange(2, 10)
+        self.cv_spin.setRange(0, 10)
         self.cv_spin.setValue(5)
+        self.cv_spin.setToolTip("Set to 0 to disable cross-validation and train on all samples.")
         self.cv_spin.setMinimumWidth(80)
         self.cv_spin.setMinimumHeight(34)
         top_layout.addWidget(self.cv_spin)
@@ -131,11 +140,46 @@ class DimensionReductionUI(QWidget):
         main_content = QHBoxLayout()
 
         # -------- LEFT: Info Display Area --------
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(8)
+
         self.info_list = QListWidget()
-        self.info_list.setMinimumWidth(280)
-        self.info_list.setMaximumWidth(320)
+        self.info_list.setMinimumWidth(300)
+        self.info_list.setMaximumWidth(360)
         self.info_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        main_content.addWidget(self.info_list)
+        left_panel.addWidget(self.info_list, 2)
+
+        component_table_label = QLabel("Component Iterations")
+        left_panel.addWidget(component_table_label)
+
+        self.component_table = QTableWidget(0, 3)
+        self.component_table.setHorizontalHeaderLabels(["Comp", "R2(CV)", "RMSE(CV)"])
+        self.component_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.component_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.component_table.verticalHeader().setVisible(False)
+        self.component_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.component_table.horizontalHeader().setStretchLastSection(True)
+        self.component_table.setMinimumWidth(300)
+        self.component_table.setMaximumWidth(360)
+        self.component_table.setMaximumHeight(180)
+        left_panel.addWidget(self.component_table)
+
+        fold_table_label = QLabel("Cross-Validation Folds")
+        left_panel.addWidget(fold_table_label)
+
+        self.fold_table = QTableWidget(0, 4)
+        self.fold_table.setHorizontalHeaderLabels(["Fold", "R2", "RMSE", "Samples"])
+        self.fold_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.fold_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.fold_table.verticalHeader().setVisible(False)
+        self.fold_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.fold_table.horizontalHeader().setStretchLastSection(True)
+        self.fold_table.setMinimumWidth(300)
+        self.fold_table.setMaximumWidth(360)
+        self.fold_table.setMaximumHeight(220)
+        left_panel.addWidget(self.fold_table)
+
+        main_content.addLayout(left_panel)
 
         # -------- RIGHT: Controls + Plot --------
         right_layout = QVBoxLayout()
@@ -257,15 +301,13 @@ class DimensionReductionUI(QWidget):
         right_layout.addLayout(axis_layout)
 
         # ===== Plot =====
-        self.score_plot = pg.PlotWidget(
-            title="principal component score diagram"
+        self.score_plot = PlotWidget(show_toolbar=True)
+        self.score_plot.reset_axes(
+            title="principal component score diagram",
+            xlabel="PC_1",
+            ylabel="PC_2"
         )
-        self.score_plot.setLabel("left", "PC_2")
-        self.score_plot.setLabel("bottom", "PC_1")
-        self.score_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.score_plot.setBackground("w")
-        # Enable antialiasing for smooth lines
-        self.score_plot.setAntialiasing(True)
+        self.score_plot.draw()
 
         right_layout.addWidget(self.score_plot, 1)
 
@@ -322,6 +364,8 @@ class DimensionReductionUI(QWidget):
             self.info_list.addItem(f"PC{i+1}: {var:.2f}% (Cumulative: {cum_var:.2f}%)")
         
         # Plot scores (PC1 vs PC2 by default)
+        self.current_plot_mode = "pca_scores"
+        self.current_plot_payload = {"pc_x": 0, "pc_y": 1 if n_components > 1 else 0}
         self._plot_pca_scores(0, 1 if n_components > 1 else 0)
         
         QMessageBox.information(
@@ -408,18 +452,11 @@ class DimensionReductionUI(QWidget):
         
         self.current_results = results
         
-        # Update info list with detailed PLSR summary including fold metrics
-        self.info_list.clear()
-        summary_text = self.analyzer.get_pls_summary()
-        for line in summary_text.split('\n'):
-            self.info_list.addItem(line)
-        if len(filtered_targets) > 0:
-            self.info_list.addItem("")
-            self.info_list.addItem(
-                f"Target stats: min={filtered_targets.min():.4f}, max={filtered_targets.max():.4f}, unique={len(np.unique(np.round(filtered_targets, 8)))}"
-            )
+        self._populate_plsr_info_list(results, filtered_targets)
         
         # Plot predictions vs actual
+        self.current_plot_mode = "plsr_predictions"
+        self.current_plot_payload = {}
         self._plot_plsr_predictions(results)
 
         message = (
@@ -449,6 +486,118 @@ class DimensionReductionUI(QWidget):
             f"RMSECV: {results['rmse_cv']:.4f}"
         )
     
+    def _reset_plot_canvas(self):
+        """Clear shared plot state so each button shows an isolated graph."""
+        for extra_ax in list(self.score_plot.figure.axes)[1:]:
+            try:
+                self.score_plot.figure.delaxes(extra_ax)
+            except Exception:
+                pass
+        self.score_plot.clear()
+        self._secondary_axis = None
+        self._mpl_pick_map = {}
+        self.score_plot.ax.grid(True, alpha=0.3)
+
+        if self.tooltip_text is not None:
+            try:
+                self.tooltip_text.remove()
+            except Exception:
+                pass
+            self.tooltip_text = None
+
+        if self._mpl_pick_connection is None:
+            self._mpl_pick_connection = self.score_plot.canvas.mpl_connect("pick_event", self._on_mpl_pick)
+        if self._mpl_hover_connection is None:
+            self._mpl_hover_connection = self.score_plot.canvas.mpl_connect("motion_notify_event", self._on_mpl_motion)
+
+    def _register_pick_artist(self, artist, metadata):
+        self._mpl_pick_map[artist] = metadata
+
+    def _point_style(self, sample_index, default_color='blue'):
+        if sample_index in self.selected_points:
+            return '#ff9800', '#ff8c00', 90
+        if default_color == 'red':
+            return '#ef4444', '#b91c1c', 60
+        if default_color == 'green':
+            return '#22c55e', '#166534', 85
+        if default_color == 'gray':
+            return '#9ca3af', '#dc2626', 60
+        return '#2563eb', '#1d4ed8', 70
+
+    def _on_mpl_pick(self, event):
+        metadata = self._mpl_pick_map.get(event.artist)
+        if not metadata or not getattr(event, "ind", None):
+            return
+        point_index = int(event.ind[0])
+        if point_index >= len(metadata):
+            return
+        sample_index = metadata[point_index].get('index', -1)
+        if sample_index < 0:
+            return
+        self._handle_sample_point_clicked(sample_index)
+
+    def _on_mpl_motion(self, event):
+        if event.inaxes is None or not self._mpl_pick_map:
+            if self.tooltip_text is not None:
+                self.tooltip_text.set_visible(False)
+                self.score_plot.canvas.draw_idle()
+            return
+
+        for artist, metadata in self._mpl_pick_map.items():
+            contains, info = artist.contains(event)
+            if not contains:
+                continue
+            indices = info.get("ind") or []
+            if not indices:
+                continue
+            point_index = int(indices[0])
+            if point_index >= len(metadata):
+                continue
+            tooltip = metadata[point_index].get("tooltip")
+            if not tooltip:
+                continue
+            if self.tooltip_text is None:
+                self.tooltip_text = event.inaxes.annotate(
+                    "",
+                    xy=(0, 0),
+                    xytext=(10, 10),
+                    textcoords="offset points",
+                    bbox=dict(boxstyle="round,pad=0.4", fc="#fff7cc", alpha=0.95),
+                    fontsize=9
+                )
+            self.tooltip_text.xy = (event.xdata, event.ydata)
+            self.tooltip_text.set_text(tooltip)
+            self.tooltip_text.set_visible(True)
+            self.score_plot.canvas.draw_idle()
+            return
+
+        if self.tooltip_text is not None and self.tooltip_text.get_visible():
+            self.tooltip_text.set_visible(False)
+            self.score_plot.canvas.draw_idle()
+
+    def _handle_sample_point_clicked(self, sample_index):
+        """Handle point click - either add to selection or show context menu."""
+        if self.selection_mode:
+            self._toggle_point_selection(sample_index)
+            return
+
+        sample_name = 'Unknown'
+        if sample_index < len(self.sample_metadata):
+            sample_name = self.sample_metadata[sample_index].get('sample_name', 'Unknown')
+
+        menu = QMenu()
+        menu.setStyleSheet("QMenu { font-size: 10pt; }")
+        validation_action = None
+        if self.algorithm_combo.currentText() == "PLSR":
+            validation_action = menu.addAction(f"Set '{sample_name}' as Validation")
+        invalidation_action = menu.addAction(f"Set '{sample_name}' as Outlier (Remove)")
+        action = menu.exec(QCursor.pos())
+
+        if validation_action is not None and action == validation_action:
+            self._set_as_validation(sample_index)
+        elif action == invalidation_action:
+            self._set_as_invalid(sample_index)
+
     def _plot_pca_scores(self, pc_x, pc_y):
         """Plot PCA scores"""
         if self.current_results is None or 'scores' not in self.current_results:
@@ -464,12 +613,18 @@ class DimensionReductionUI(QWidget):
             )
             return
         
-        self.score_plot.clear()
-        self.score_plot.setTitle("PCA Score Plot")
-        self.score_plot.setLabel("left", f"PC{pc_y+1}")
-        self.score_plot.setLabel("bottom", f"PC{pc_x+1}")
-        
-        spots = []
+        self._reset_plot_canvas()
+        self.current_plot_mode = "pca_scores"
+        self.current_plot_payload = {"pc_x": pc_x, "pc_y": pc_y}
+        self.score_plot.reset_axes(
+            title="PCA Score Plot",
+            xlabel=f"PC{pc_x+1}",
+            ylabel=f"PC{pc_y+1}"
+        )
+
+        x_vals = []
+        y_vals = []
+        metadata = []
         for row_idx in range(scores.shape[0]):
             sample_index = self.analysis_indices[row_idx] if row_idx < len(self.analysis_indices) else row_idx
             sample_name = self._get_sample_name(sample_index)
@@ -478,34 +633,35 @@ class DimensionReductionUI(QWidget):
                 f"PC{pc_x+1}: {scores[row_idx, pc_x]:.4f}\n"
                 f"PC{pc_y+1}: {scores[row_idx, pc_y]:.4f}"
             )
-            spots.append({
-                'pos': (scores[row_idx, pc_x], scores[row_idx, pc_y]),
-                'size': 10,
-                'pen': self._get_point_pen(sample_index),
-                'brush': self._get_point_brush(sample_index, default_color='blue'),
-                'data': {'tooltip': tooltip, 'index': sample_index}
-            })
-        
-        scatter = pg.ScatterPlotItem(spots=spots, name="PCA Scores")
-        scatter.sigClicked.connect(self._on_point_clicked)
-        self.score_plot.addItem(scatter)
-        self.scatter_items = {'scores': scatter}
+            x_vals.append(scores[row_idx, pc_x])
+            y_vals.append(scores[row_idx, pc_y])
+            metadata.append({'tooltip': tooltip, 'index': sample_index})
+
+        colors = [self._point_style(meta['index'], 'blue')[0] for meta in metadata]
+        edges = [self._point_style(meta['index'], 'blue')[1] for meta in metadata]
+        sizes = [self._point_style(meta['index'], 'blue')[2] for meta in metadata]
+        scatter = self.score_plot.ax.scatter(x_vals, y_vals, c=colors, edgecolors=edges, s=sizes, alpha=0.8, picker=True)
+        self._register_pick_artist(scatter, metadata)
+        self.score_plot.draw()
     
     def _plot_plsr_predictions(self, results):
         """Plot PLSR predicted vs actual with hover tooltips"""
-        self.score_plot.clear()
-        self.score_plot.setTitle("PLSR: Predicted vs Actual")
-        self.score_plot.setLabel("left", "Predicted")
-        self.score_plot.setLabel("bottom", "Actual")
+        self._reset_plot_canvas()
+        force_base_view = self.current_plot_payload.get("force_base_view", False)
+        self.current_plot_mode = "plsr_predictions"
+        self.current_plot_payload = {"force_base_view": force_base_view}
+        self.score_plot.reset_axes(
+            title="PLSR: Predicted vs Actual",
+            xlabel="Actual",
+            ylabel="Predicted"
+        )
         
-        # Prepare calibration points with tooltips (skip validation points)
-        spots_cal = []
+        cal_x = []
+        cal_y = []
+        cal_meta = []
         for row_idx, i in enumerate(self.analysis_indices):
-            # Skip validation points - they should not be displayed
             if i in self.validation_indices:
                 continue
-            
-            # Get sample info
             if i < len(self.sample_metadata):
                 sample_name = self.sample_metadata[i].get('sample_name', f'Sample {i+1}')
                 property_val = self.sample_metadata[i].get('property_value', '')
@@ -514,30 +670,17 @@ class DimensionReductionUI(QWidget):
                 sample_name = f'Sample {i+1}'
                 property_val = self.target_values[i]
                 property_name = 'Value'
-            
-            # Create tooltip text with sample name and property
             tooltip = f"{sample_name}\n{property_name}: {property_val}"
-            
-            spots_cal.append({
-                'pos': (self.target_values[i], results['y_pred_train'][row_idx]),
-                'size': 10,
-                'pen': self._get_point_pen(i),
-                'brush': self._get_point_brush(i, default_color='blue'),
-                'data': {'tooltip': tooltip, 'index': i}  # Store tooltip and index
-            })
-        
-        # Plot calibration points
-        scatter_cal = pg.ScatterPlotItem(spots=spots_cal, name="Calibration")
-        scatter_cal.sigClicked.connect(self._on_point_clicked)
-        self.score_plot.addItem(scatter_cal)
-        
-        # Prepare CV points with tooltips (skip validation points)
-        spots_cv = []
+            cal_x.append(self.target_values[i])
+            cal_y.append(results['y_pred_train'][row_idx])
+            cal_meta.append({'tooltip': tooltip, 'index': i})
+
+        cv_x = []
+        cv_y = []
+        cv_meta = []
         for row_idx, i in enumerate(self.analysis_indices):
-            # Skip validation points - they should not be displayed
             if i in self.validation_indices:
                 continue
-            
             if i < len(self.sample_metadata):
                 sample_name = self.sample_metadata[i].get('sample_name', f'Sample {i+1}')
                 property_val = self.sample_metadata[i].get('property_value', '')
@@ -546,24 +689,14 @@ class DimensionReductionUI(QWidget):
                 sample_name = f'Sample {i+1}'
                 property_val = self.target_values[i]
                 property_name = 'Value'
-            
-            # Create tooltip text
             tooltip = f"{sample_name} (CV)\n{property_name}: {property_val}"
-            
-            spots_cv.append({
-                'pos': (self.target_values[i], results['y_pred_cv'][row_idx]),
-                'size': 8,
-                'pen': self._get_point_pen(i),
-                'brush': self._get_point_brush(i, default_color='red'),
-                'data': {'tooltip': tooltip, 'index': i}
-            })
-        
-        # Plot CV predictions
-        scatter_cv = pg.ScatterPlotItem(spots=spots_cv, name="Cross-validation")
-        scatter_cv.sigClicked.connect(self._on_point_clicked)
-        self.score_plot.addItem(scatter_cv)
+            cv_x.append(self.target_values[i])
+            cv_y.append(results['y_pred_cv'][row_idx])
+            cv_meta.append({'tooltip': tooltip, 'index': i})
 
-        validation_spots = []
+        validation_x = []
+        validation_y = []
+        validation_meta = []
         for point in results.get('validation_points', []):
             i = point['index']
             point_meta = None
@@ -584,133 +717,27 @@ class DimensionReductionUI(QWidget):
                 property_name = 'Value'
 
             tooltip = f"{sample_name} (Validation)\n{property_name}: {property_val}"
-            validation_spots.append({
-                'pos': (point['actual'], point['predicted']),
-                'size': 11,
-                'pen': pg.mkPen((0, 128, 0), width=2),
-                'brush': pg.mkBrush(0, 170, 0, 130),
-                'symbol': 't',
-                'data': {'tooltip': tooltip, 'index': i}
-            })
+            validation_x.append(point['actual'])
+            validation_y.append(point['predicted'])
+            validation_meta.append({'tooltip': tooltip, 'index': i})
 
-        scatter_validation = None
-        if validation_spots:
-            scatter_validation = pg.ScatterPlotItem(spots=validation_spots, name="Validation")
-            scatter_validation.sigClicked.connect(self._on_point_clicked)
-            self.score_plot.addItem(scatter_validation)
-        
-        # Store scatter items for hover detection
-        self.scatter_items = {'calibration': scatter_cal, 'cv': scatter_cv}
-        if scatter_validation is not None:
-            self.scatter_items['validation'] = scatter_validation
-        
-        # Store tooltip text item for hover display
-        if not hasattr(self, 'tooltip_text'):
-            self.tooltip_text = pg.TextItem(color=(0, 0, 0), anchor=(0, 1), fill=(255, 255, 200, 230))
-            self.score_plot.addItem(self.tooltip_text)
-        self.tooltip_text.hide()
-        
-        # Connect mouse move signal for hover detection
-        try:
-            self.score_plot.scene().sigMouseMoved.disconnect()
-        except:
-            pass
-        self.score_plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        if cal_x:
+            scatter_cal = self.score_plot.ax.scatter(cal_x, cal_y, c='#2563eb', edgecolors='#1d4ed8', s=70, alpha=0.8, label='Calibration', picker=True)
+            self._register_pick_artist(scatter_cal, cal_meta)
+        if cv_x:
+            scatter_cv = self.score_plot.ax.scatter(cv_x, cv_y, c='#ef4444', edgecolors='#b91c1c', s=55, alpha=0.7, label='Cross-validation', picker=True)
+            self._register_pick_artist(scatter_cv, cv_meta)
+        if validation_x:
+            scatter_validation = self.score_plot.ax.scatter(validation_x, validation_y, c='#22c55e', edgecolors='#166534', marker='^', s=85, alpha=0.8, label='Validation', picker=True)
+            self._register_pick_artist(scatter_validation, validation_meta)
         
         # Add 1:1 line
         active_targets = self.target_values[self.analysis_indices]
         y_min = min(active_targets.min(), results['y_pred_train'].min())
         y_max = max(active_targets.max(), results['y_pred_train'].max())
-        line = pg.PlotDataItem(
-            [y_min, y_max], [y_min, y_max],
-            pen=pg.mkPen('k', width=2, style=Qt.PenStyle.DashLine)
-        )
-        self.score_plot.addItem(line)
-        self.score_plot.enableAutoRange()
-        self.score_plot.autoRange()
-    
-    def _on_mouse_moved(self, pos):
-        """Detect mouse position and show tooltip for nearby points"""
-        if not hasattr(self, 'scatter_items'):
-            return
-        
-        # Convert scene position to plot coordinates
-        mouse_point = self.score_plot.getViewBox().mapSceneToView(pos)
-        
-        # Check all scatter items for nearby points
-        for scatter_item in self.scatter_items.values():
-            points = scatter_item.points()
-            for point in points:
-                point_pos = point.pos()
-                # Calculate distance (in plot coordinates)
-                dx = mouse_point.x() - point_pos[0]
-                dy = mouse_point.y() - point_pos[1]
-                
-                # Get view range for relative distance calculation
-                view_range = self.score_plot.getViewBox().viewRange()
-                x_range = view_range[0][1] - view_range[0][0]
-                y_range = view_range[1][1] - view_range[1][0]
-                
-                # Normalize distance
-                norm_dist = ((dx/x_range)**2 + (dy/y_range)**2)**0.5
-                
-                # If within threshold, show tooltip
-                if norm_dist < 0.02:  # 2% of plot range
-                    point_data = point.data()
-                    if isinstance(point_data, dict):
-                        tooltip_text = point_data.get('tooltip', str(point_data))
-                    else:
-                        tooltip_text = str(point_data)
-                    self.tooltip_text.setText(tooltip_text)
-                    self.tooltip_text.setPos(point_pos[0], point_pos[1])
-                    self.tooltip_text.show()
-                    return
-        
-        # No point nearby, hide tooltip
-        self.tooltip_text.hide()
-    
-    def _on_point_clicked(self, plot, points):
-        """Handle point click - either add to selection or show context menu"""
-        if len(points) == 0:
-            return
-        
-        point = points[0]
-        point_data = point.data()
-        
-        if not isinstance(point_data, dict):
-            return
-        
-        sample_index = point_data.get('index', -1)
-        if sample_index < 0:
-            return
-        
-        # If in selection mode, add/remove point from selection
-        if self.selection_mode:
-            self._toggle_point_selection(sample_index)
-            return
-        
-        # Get sample info
-        sample_name = 'Unknown'
-        if sample_index < len(self.sample_metadata):
-            sample_name = self.sample_metadata[sample_index].get('sample_name', 'Unknown')
-        
-        # Create context menu
-        menu = QMenu()
-        menu.setStyleSheet("QMenu { font-size: 10pt; }")
-        
-        # Add options
-        validation_action = None
-        if self.algorithm_combo.currentText() == "PLSR":
-            validation_action = menu.addAction(f"Set '{sample_name}' as Validation")
-        invalidation_action = menu.addAction(f"Set '{sample_name}' as Outlier (Remove)")
-        
-        # Show menu and get user choice
-        action = menu.exec(QCursor.pos())
-        
-        if validation_action is not None and action == validation_action:
-            self._set_as_validation(sample_index)
-        elif action == invalidation_action:
-            self._set_as_invalid(sample_index)
+        self.score_plot.ax.plot([y_min, y_max], [y_min, y_max], color='black', linewidth=2, linestyle='--')
+        self.score_plot.ax.legend(loc='best')
+        self.score_plot.draw()
     
     def _set_as_validation(self, sample_index):
         """Move sample to validation set"""
@@ -1000,10 +1027,7 @@ class DimensionReductionUI(QWidget):
                 )
                 return
             else:
-                summary_text = self.analyzer.get_pls_summary()
-                for line in summary_text.split('\n'):
-                    self.info_list.addItem(line)
-                
+                self._populate_plsr_info_list(results, filtered_targets)
                 self.info_list.addItem("")
                 self.info_list.addItem(f"Excluded samples: {len(self.excluded_indices)}")
                 self._plot_plsr_predictions_with_exclusions(results, valid_mask)
@@ -1026,20 +1050,84 @@ class DimensionReductionUI(QWidget):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to re-run analysis: {str(e)}")
+
+    def _populate_plsr_info_list(self, results, filtered_targets):
+        """Show PLSR settings, component iterations, and per-fold CV rows clearly."""
+        self.info_list.clear()
+        self.component_table.setRowCount(0)
+        self.fold_table.setRowCount(0)
+
+        optimize_enabled = results.get('optimized', True)
+        max_tested = results.get('max_components_tested', results.get('best_n_components', ''))
+        iteration_count = results.get('optimization_iterations', 0)
+        best_components = results.get('best_n_components', '')
+        cv_folds = results.get('cv_folds', '')
+
+        self.info_list.addItem("PLSR Regression Summary")
+        self.info_list.addItem(f"Samples: {results.get('n_samples', 0)}")
+        self.info_list.addItem(f"CV folds: {cv_folds}")
+        self.info_list.addItem(f"Optimization: {'On' if optimize_enabled else 'Off'}")
+        if optimize_enabled:
+            self.info_list.addItem(f"Max components to test: {max_tested}")
+            self.info_list.addItem(f"Iterations run: {iteration_count}")
+        else:
+            self.info_list.addItem(f"Fixed components requested: {max_tested}")
+            self.info_list.addItem(f"Iterations run: {iteration_count}")
+        self.info_list.addItem(f"Optimal components selected: {best_components}")
+        self.info_list.addItem(
+            f"Overall CV: R2={results.get('r2_cv', 0.0):.4f}, RMSE={results.get('rmse_cv', 0.0):.4f}"
+        )
+        self.info_list.addItem(
+            f"Calibration: R2={results.get('r2_train', 0.0):.4f}, RMSE={results.get('rmse_train', 0.0):.4f}"
+        )
+
+        if len(filtered_targets) > 0:
+            self.info_list.addItem(
+                f"Target stats: min={filtered_targets.min():.4f}, max={filtered_targets.max():.4f}, unique={len(np.unique(np.round(filtered_targets, 8)))}"
+            )
+
+        component_metrics = results.get('component_metrics') or []
+        if component_metrics:
+            self.component_table.setRowCount(len(component_metrics))
+            for row, metric in enumerate(component_metrics):
+                component = metric.get('component', '')
+                component_item = QTableWidgetItem(str(component))
+                if component == best_components:
+                    component_item.setBackground(Qt.GlobalColor.yellow)
+                self.component_table.setItem(row, 0, component_item)
+                self.component_table.setItem(row, 1, QTableWidgetItem(f"{metric.get('r2_cv', 0.0):.4f}"))
+                self.component_table.setItem(row, 2, QTableWidgetItem(f"{metric.get('rmse_cv', 0.0):.4f}"))
+            self.component_table.resizeRowsToContents()
+
+        fold_metrics = results.get('fold_metrics') or []
+        if fold_metrics:
+            self.fold_table.setRowCount(len(fold_metrics))
+            for row, metric in enumerate(fold_metrics):
+                fold_r2 = metric.get('r2')
+                r2_text = "nan" if fold_r2 is None or np.isnan(fold_r2) else f"{fold_r2:.4f}"
+                self.fold_table.setItem(row, 0, QTableWidgetItem(str(metric.get('fold', ''))))
+                self.fold_table.setItem(row, 1, QTableWidgetItem(r2_text))
+                self.fold_table.setItem(row, 2, QTableWidgetItem(f"{metric.get('rmse', 0.0):.4f}"))
+                self.fold_table.setItem(row, 3, QTableWidgetItem(str(metric.get('n_samples', 0))))
+            self.fold_table.resizeRowsToContents()
     
     def _plot_plsr_predictions_with_exclusions(self, results, valid_mask):
         """Plot PLSR predictions showing excluded points differently"""
-        self.score_plot.clear()
-        self.score_plot.setTitle("PLSR: Predicted vs Actual (with exclusions)")
-        self.score_plot.setLabel("left", "Predicted")
-        self.score_plot.setLabel("bottom", "Actual")
-        
-        # Plot only valid calibration points (skip excluded and validation)
-        spots_cal = []
+        self._reset_plot_canvas()
+        self.current_plot_mode = "plsr_predictions_with_exclusions"
+        self.current_plot_payload = {"valid_mask": valid_mask.copy()}
+        self.score_plot.reset_axes(
+            title="PLSR: Predicted vs Actual (with exclusions)",
+            xlabel="Actual",
+            ylabel="Predicted"
+        )
+
+        cal_x = []
+        cal_y = []
+        cal_meta = []
         for row_idx, i in enumerate(self.analysis_indices):
             if i in self.validation_indices:
-                continue  # Skip validation points
-            
+                continue
             if i < len(self.sample_metadata):
                 sample_name = self.sample_metadata[i].get('sample_name', f'Sample {i+1}')
                 property_val = self.sample_metadata[i].get('property_value', '')
@@ -1048,27 +1136,17 @@ class DimensionReductionUI(QWidget):
                 sample_name = f'Sample {i+1}'
                 property_val = self.target_values[i]
                 property_name = 'Value'
-            
             tooltip = f"{sample_name}\n{property_name}: {property_val}"
-            
-            spots_cal.append({
-                'pos': (self.target_values[i], results['y_pred_train'][row_idx]),
-                'size': 10,
-                'pen': self._get_point_pen(i),
-                'brush': self._get_point_brush(i, default_color='blue'),
-                'data': {'tooltip': tooltip, 'index': i}
-            })
-        
-        scatter_cal = pg.ScatterPlotItem(spots=spots_cal, name="Calibration")
-        scatter_cal.sigClicked.connect(self._on_point_clicked)
-        self.score_plot.addItem(scatter_cal)
-        
-        # Plot CV predictions (skip excluded and validation)
-        spots_cv = []
+            cal_x.append(self.target_values[i])
+            cal_y.append(results['y_pred_train'][row_idx])
+            cal_meta.append({'tooltip': tooltip, 'index': i})
+
+        cv_x = []
+        cv_y = []
+        cv_meta = []
         for row_idx, i in enumerate(self.analysis_indices):
             if i in self.validation_indices:
-                continue  # Skip validation points
-            
+                continue
             if i < len(self.sample_metadata):
                 sample_name = self.sample_metadata[i].get('sample_name', f'Sample {i+1}')
                 property_val = self.sample_metadata[i].get('property_value', '')
@@ -1077,27 +1155,17 @@ class DimensionReductionUI(QWidget):
                 sample_name = f'Sample {i+1}'
                 property_val = self.target_values[i]
                 property_name = 'Value'
-            
             tooltip = f"{sample_name} (CV)\n{property_name}: {property_val}"
-            
-            spots_cv.append({
-                'pos': (self.target_values[i], results['y_pred_cv'][row_idx]),
-                'size': 8,
-                'pen': self._get_point_pen(i),
-                'brush': self._get_point_brush(i, default_color='red'),
-                'data': {'tooltip': tooltip, 'index': i}
-            })
-        
-        scatter_cv = pg.ScatterPlotItem(spots=spots_cv, name="Cross-validation")
-        scatter_cv.sigClicked.connect(self._on_point_clicked)
-        self.score_plot.addItem(scatter_cv)
-        
-        # Plot excluded points in gray
-        excluded_spots = []
+            cv_x.append(self.target_values[i])
+            cv_y.append(results['y_pred_cv'][row_idx])
+            cv_meta.append({'tooltip': tooltip, 'index': i})
+
+        excluded_x = []
+        excluded_y = []
+        excluded_meta = []
         for i in self.excluded_indices:
             if i >= len(self.target_values):
                 continue
-            
             if i < len(self.sample_metadata):
                 sample_name = self.sample_metadata[i].get('sample_name', f'Sample {i+1}')
                 property_val = self.sample_metadata[i].get('property_value', '')
@@ -1106,49 +1174,28 @@ class DimensionReductionUI(QWidget):
                 sample_name = f'Sample {i+1}'
                 property_val = self.target_values[i]
                 property_name = 'Value'
-            
             tooltip = f"{sample_name} (EXCLUDED)\n{property_name}: {property_val}"
-            
-            # Show excluded points at their original position (x = actual value, y = 0 or minimal)
-            excluded_spots.append({
-                'pos': (self.target_values[i], self.target_values[i]),  # On the 1:1 line
-                'size': 8,
-                'pen': pg.mkPen('r', width=2),
-                'brush': pg.mkBrush(128, 128, 128, 100),
-                'symbol': 'x',
-                'data': {'tooltip': tooltip, 'index': i}
-            })
-        
-        if excluded_spots:
-            scatter_excluded = pg.ScatterPlotItem(spots=excluded_spots, name="Excluded")
-            self.score_plot.addItem(scatter_excluded)
-        
-        # Store scatter items for hover detection
-        self.scatter_items = {'calibration': scatter_cal, 'cv': scatter_cv}
-        
-        # Recreate tooltip
-        if hasattr(self, 'tooltip_text'):
-            self.score_plot.removeItem(self.tooltip_text)
-        self.tooltip_text = pg.TextItem(color=(0, 0, 0), anchor=(0, 1), fill=(255, 255, 200, 230))
-        self.score_plot.addItem(self.tooltip_text)
-        self.tooltip_text.hide()
-        
-        # Reconnect mouse move signal
-        try:
-            self.score_plot.scene().sigMouseMoved.disconnect()
-        except:
-            pass
-        self.score_plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+            excluded_x.append(self.target_values[i])
+            excluded_y.append(self.target_values[i])
+            excluded_meta.append({'tooltip': tooltip, 'index': i})
+
+        if cal_x:
+            scatter_cal = self.score_plot.ax.scatter(cal_x, cal_y, c='#2563eb', edgecolors='#1d4ed8', s=70, alpha=0.8, label='Calibration', picker=True)
+            self._register_pick_artist(scatter_cal, cal_meta)
+        if cv_x:
+            scatter_cv = self.score_plot.ax.scatter(cv_x, cv_y, c='#ef4444', edgecolors='#b91c1c', s=55, alpha=0.7, label='Cross-validation', picker=True)
+            self._register_pick_artist(scatter_cv, cv_meta)
+        if excluded_x:
+            scatter_excluded = self.score_plot.ax.scatter(excluded_x, excluded_y, c='#9ca3af', edgecolors='#dc2626', marker='x', s=65, alpha=0.8, label='Excluded', picker=True)
+            self._register_pick_artist(scatter_excluded, excluded_meta)
         
         # Add 1:1 line
         active_targets = self.target_values[self.analysis_indices]
         y_min = min(active_targets.min(), results['y_pred_train'].min())
         y_max = max(active_targets.max(), results['y_pred_train'].max())
-        line = pg.PlotDataItem(
-            [y_min, y_max], [y_min, y_max],
-            pen=pg.mkPen('k', width=2, style=Qt.PenStyle.DashLine)
-        )
-        self.score_plot.addItem(line)
+        self.score_plot.ax.plot([y_min, y_max], [y_min, y_max], color='black', linewidth=2, linestyle='--')
+        self.score_plot.ax.legend(loc='best')
+        self.score_plot.draw()
     
     def on_select_dimension_clicked(self):
         """Select dimensions based on contribution rate or PC number"""
@@ -1200,7 +1247,9 @@ class DimensionReductionUI(QWidget):
         # Extract PC numbers
         pc_x = int(x_text.split('_')[1]) - 1
         pc_y = int(y_text.split('_')[1]) - 1
-        
+
+        self.current_plot_mode = "pca_scores"
+        self.current_plot_payload = {"pc_x": pc_x, "pc_y": pc_y}
         self._plot_pca_scores(pc_x, pc_y)
     
     def on_3d_diagram_clicked(self):
@@ -1227,48 +1276,30 @@ class DimensionReductionUI(QWidget):
         dialog.resize(900, 700)
         layout = QVBoxLayout(dialog)
         
-        try:
-            import pyqtgraph.opengl as gl
-            view = gl.GLViewWidget()
-            view.setBackgroundColor('w')
-            view.opts['distance'] = 40
-            layout.addWidget(view)
-            
-            grid = gl.GLGridItem()
-            grid.scale(2, 2, 2)
-            view.addItem(grid)
-            
-            colors = np.array([
-                [1.0, 0.65, 0.0, 0.9] if sample_index in self.selected_points else [0.0, 0.35, 0.9, 0.75]
-                for sample_index in self.analysis_indices
-            ])
-            scatter = gl.GLScatterPlotItem(pos=scores[:, :3], color=colors, size=10, pxMode=True)
-            view.addItem(scatter)
-        except Exception:
-            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-            from matplotlib.figure import Figure
-            from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-            
-            figure = Figure(figsize=(8, 6), tight_layout=True)
-            canvas = FigureCanvas(figure)
-            layout.addWidget(canvas)
-            
-            ax = figure.add_subplot(111, projection='3d')
-            x_vals = scores[:, 0]
-            y_vals = scores[:, 1]
-            z_vals = scores[:, 2]
-            colors = [
-                '#ff9800' if sample_index in self.selected_points else '#1565c0'
-                for sample_index in self.analysis_indices
-            ]
-            
-            ax.scatter(x_vals, y_vals, z_vals, c=colors, s=45, depthshade=True)
-            ax.set_xlabel('PC1')
-            ax.set_ylabel('PC2')
-            ax.set_zlabel('PC3')
-            ax.set_title('PCA 3D Score Plot')
-            ax.grid(True, alpha=0.3)
-            canvas.draw()
+        from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+        from matplotlib.figure import Figure
+        from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+        
+        figure = Figure(figsize=(8, 6), tight_layout=True)
+        canvas = FigureCanvas(figure)
+        layout.addWidget(canvas)
+        
+        ax = figure.add_subplot(111, projection='3d')
+        x_vals = scores[:, 0]
+        y_vals = scores[:, 1]
+        z_vals = scores[:, 2]
+        colors = [
+            '#ff9800' if sample_index in self.selected_points else '#1565c0'
+            for sample_index in self.analysis_indices
+        ]
+        
+        ax.scatter(x_vals, y_vals, z_vals, c=colors, s=45, depthshade=True)
+        ax.set_xlabel('PC1')
+        ax.set_ylabel('PC2')
+        ax.set_zlabel('PC3')
+        ax.set_title('PCA 3D Score Plot')
+        ax.grid(True, alpha=0.3)
+        canvas.draw()
         
         dialog.exec()
     
@@ -1336,6 +1367,8 @@ class DimensionReductionUI(QWidget):
             return
         
         try:
+            self.current_plot_mode = "plsr_predictions"
+            self.current_plot_payload = {"force_base_view": True}
             self._plot_plsr_predictions(self.current_results)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to plot predictions: {str(e)}")
@@ -1361,6 +1394,15 @@ class DimensionReductionUI(QWidget):
             QMessageBox.warning(self, "Warning", "No PLSR results available!\n\nPlease run PLSR analysis first.")
             return
         
+        if not self.current_results.get('cv_enabled', True):
+            QMessageBox.information(
+                self,
+                "Information",
+                "Cross-validation is disabled (CV folds = 0).\n\n"
+                "Component selection curve is only available when CV is enabled."
+            )
+            return
+
         if not self.current_results.get('optimized', True):
             QMessageBox.information(
                 self, 
@@ -1377,97 +1419,82 @@ class DimensionReductionUI(QWidget):
     
     def _plot_coefficients(self):
         """Plot regression coefficients vs wavelengths"""
-        self.score_plot.clear()
-        self.score_plot.setTitle("PLSR: Regression Coefficients")
-        self.score_plot.setLabel("left", "Coefficient Value")
-        self.score_plot.setLabel("bottom", "Wavelength (nm)")
+        self._reset_plot_canvas()
+        self.current_plot_mode = "plsr_coefficients"
+        self.current_plot_payload = {}
+        self.score_plot.reset_axes(
+            title="PLSR: Regression Coefficients",
+            xlabel="Wavelength (nm)",
+            ylabel="Coefficient Value"
+        )
         
         coefficients = self.current_results['coefficients']
-        
-        # Plot coefficients
-        coef_plot = pg.PlotDataItem(
-            x=self.wavelengths,
-            y=coefficients,
-            pen=pg.mkPen('b', width=2)
+        wavelengths = self.wavelengths
+        if wavelengths is None or len(wavelengths) != len(coefficients):
+            wavelengths = np.arange(1, len(coefficients) + 1)
+            self.score_plot.ax.set_xlabel("Variable Index")
+
+        self.score_plot.ax.plot(
+            wavelengths,
+            coefficients,
+            color='#1d4ed8',
+            linewidth=2.4,
+            zorder=3
         )
-        self.score_plot.addItem(coef_plot)
-        
-        # Add zero line
-        self.score_plot.addItem(pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('k', width=1, style=Qt.PenStyle.DashLine)))
+        self.score_plot.ax.fill_between(
+            wavelengths,
+            0,
+            coefficients,
+            where=coefficients >= 0,
+            color='#93c5fd',
+            alpha=0.25,
+            zorder=2
+        )
+        self.score_plot.ax.fill_between(
+            wavelengths,
+            0,
+            coefficients,
+            where=coefficients < 0,
+            color='#bfdbfe',
+            alpha=0.18,
+            zorder=2
+        )
+        self.score_plot.ax.axhline(0, color='black', linewidth=1, linestyle='--', zorder=1)
+        self.score_plot.ax.margins(x=0.02, y=0.08)
+        self.score_plot.draw()
     
     def _plot_component_selection_curve(self):
         """Plot R² and RMSE vs number of components with dual y-axes"""
-        self.score_plot.clear()
-        self.score_plot.setTitle("Component Selection: CV Performance")
-        self.score_plot.setLabel("left", "R² (CV)", color='b')
-        self.score_plot.setLabel("bottom", "Number of Components")
+        self._reset_plot_canvas()
+        self.current_plot_mode = "plsr_component_selection"
+        self.current_plot_payload = {}
+        self.score_plot.reset_axes(
+            title="Component Selection: CV Performance",
+            xlabel="Number of Components",
+            ylabel="R² (CV)"
+        )
         
         r2_scores = self.current_results['r2_scores']
         rmse_scores = self.current_results['rmse_scores']
         n_components = list(range(1, len(r2_scores) + 1))
-        
-        # Create second ViewBox for RMSE (right axis)
-        p2 = pg.ViewBox()
-        self.score_plot.showAxis('right')
-        self.score_plot.scene().addItem(p2)
-        self.score_plot.getAxis('right').linkToView(p2)
-        p2.setXLink(self.score_plot)
-        self.score_plot.getAxis('right').setLabel('RMSE (CV)', color='r')
-        
-        # Function to update views when plot is resized
-        def updateViews():
-            p2.setGeometry(self.score_plot.getViewBox().sceneBoundingRect())
-            p2.linkedViewChanged(self.score_plot.getViewBox(), p2.XAxis)
-        
-        updateViews()
-        self.score_plot.getViewBox().sigResized.connect(updateViews)
-        
-        # Plot R² scores on left axis (blue)
-        r2_plot = pg.PlotDataItem(
-            x=n_components,
-            y=r2_scores,
-            pen=pg.mkPen('b', width=2),
-            symbol='o',
-            symbolSize=8,
-            symbolBrush='b'
-        )
-        self.score_plot.addItem(r2_plot)
-        
-        # Plot RMSE on right axis (red)
-        rmse_plot = pg.PlotDataItem(
-            x=n_components,
-            y=rmse_scores,
-            pen=pg.mkPen('r', width=2),
-            symbol='s',
-            symbolSize=8,
-            symbolBrush='r'
-        )
-        p2.addItem(rmse_plot)
-        
-        # Set appropriate ranges
-        self.score_plot.setYRange(min(r2_scores) * 0.95, max(r2_scores) * 1.05)
-        p2.setYRange(min(rmse_scores) * 0.95, max(rmse_scores) * 1.05)
-        
-        # Mark the optimal component with vertical line
+        self._secondary_axis = self.score_plot.ax.twinx()
+        self._secondary_axis.set_ylabel("RMSE (CV)")
+        self._secondary_axis.grid(False)
+        self.score_plot.ax.plot(n_components, r2_scores, color='#2563eb', linewidth=2, marker='o', label='R² (CV)')
+        self._secondary_axis.plot(n_components, rmse_scores, color='#dc2626', linewidth=2, marker='s', label='RMSE (CV)')
+
         best_n = self.current_results['best_n_components']
-        
-        # Use a dark green color for the optimal component line
-        dark_green = (0, 100, 0)
-        opt_line = pg.InfiniteLine(
-            pos=best_n, 
-            angle=90, 
-            pen=pg.mkPen(dark_green, width=2, style=Qt.PenStyle.DashLine)
-        )
-        self.score_plot.addItem(opt_line)
-        
-        # Add text annotation for optimal component (also dark green)
-        text_item = pg.TextItem(
+        self.score_plot.ax.axvline(best_n, color='#166534', linewidth=2, linestyle='--')
+        self.score_plot.ax.annotate(
             f'Optimal: {best_n} components',
-            anchor=(0.5, 1),
-            color=dark_green
+            xy=(best_n, max(r2_scores)),
+            xytext=(8, 8),
+            textcoords='offset points',
+            color='#166534',
+            fontsize=9,
+            fontweight='bold'
         )
-        text_item.setPos(best_n, max(r2_scores) * 1.03)
-        self.score_plot.addItem(text_item)
+        self.score_plot.draw()
     
     def load_preprocessed_data(self, spectra: np.ndarray, wavelengths: np.ndarray = None, 
                               target_values: np.ndarray = None, sample_metadata: list = None,
@@ -1509,6 +1536,8 @@ class DimensionReductionUI(QWidget):
             self.excluded_indices = []
             self.validation_indices = []
             self.current_results = None
+            self.current_plot_mode = None
+            self.current_plot_payload = {}
             self.selection_mode = False
             self.selected_points = []
             self.analysis_indices = list(range(spectra.shape[0]))
@@ -1547,35 +1576,38 @@ class DimensionReductionUI(QWidget):
             return self.sample_metadata[sample_index].get('sample_name', f'Sample {sample_index + 1}')
         return f'Sample {sample_index + 1}'
     
-    def _get_point_brush(self, sample_index, default_color='blue'):
-        """Return brush for regular or selected points"""
-        if sample_index in self.selected_points:
-            return pg.mkBrush(255, 165, 0, 220)
-        
-        if default_color == 'red':
-            return pg.mkBrush(255, 0, 0, 120)
-        return pg.mkBrush(0, 0, 255, 120)
-    
-    def _get_point_pen(self, sample_index):
-        """Return pen for regular or selected points"""
-        if sample_index in self.selected_points:
-            return pg.mkPen((255, 140, 0), width=2)
-        return pg.mkPen(None)
-    
     def _refresh_current_plot(self):
         """Redraw the current chart so selection state stays visible"""
         if self.current_results is None:
             return
-        
-        algorithm = self.algorithm_combo.currentText()
-        if algorithm == "PCA" and 'scores' in self.current_results:
-            x_text = self.x_axis_combo.currentText()
-            y_text = self.y_axis_combo.currentText()
-            pc_x = int(x_text.split('_')[1]) - 1
-            pc_y = int(y_text.split('_')[1]) - 1
+
+        if self.current_plot_mode == "pca_scores" and 'scores' in self.current_results:
+            pc_x = self.current_plot_payload.get("pc_x", 0)
+            pc_y = self.current_plot_payload.get("pc_y", 1)
             self._plot_pca_scores(pc_x, pc_y)
-        elif algorithm == "PLSR":
-            if len(self.excluded_indices) > 0:
+        elif self.current_plot_mode == "plsr_coefficients":
+            self._plot_coefficients()
+        elif self.current_plot_mode == "plsr_component_selection":
+            self._plot_component_selection_curve()
+        elif self.current_plot_mode == "plsr_predictions_with_exclusions":
+            if self.current_plot_payload.get("force_base_view"):
+                self._plot_plsr_predictions(self.current_results)
+                return
+            valid_mask = self.current_plot_payload.get("valid_mask")
+            if valid_mask is None and self.target_values is not None:
+                valid_mask = np.ones(len(self.target_values), dtype=bool)
+                for idx in self.excluded_indices:
+                    if 0 <= idx < len(valid_mask):
+                        valid_mask[idx] = False
+            if valid_mask is not None:
+                self._plot_plsr_predictions_with_exclusions(self.current_results, valid_mask)
+            else:
+                self._plot_plsr_predictions(self.current_results)
+        elif self.current_plot_mode == "plsr_predictions":
+            if self.current_plot_payload.get("force_base_view"):
+                self._plot_plsr_predictions(self.current_results)
+                return
+            if len(self.excluded_indices) > 0 and self.target_values is not None:
                 valid_mask = np.ones(len(self.target_values), dtype=bool)
                 for idx in self.excluded_indices:
                     if 0 <= idx < len(valid_mask):
